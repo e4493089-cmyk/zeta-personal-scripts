@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta Full Chat Export
 // @namespace    zeta-personal-tools
-// @version      0.1.3
+// @version      0.1.4
 // @description  로드되지 않은 이전 메시지까지 거슬러 올라가 Zeta 대화 전체를 요약용 Markdown으로 저장합니다.
 // @match        https://zeta-ai.io/*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-full-chat-export.user.js
@@ -58,6 +58,18 @@
     return 'narrator';
   }
 
+  function pushPart(parts, type, text) {
+    const value = clean(text);
+    if (!value) return;
+
+    const previous = parts[parts.length - 1];
+    if (previous?.type === type) {
+      previous.text = clean(previous.text + '\n\n' + value);
+    } else {
+      parts.push({ type, text: value });
+    }
+  }
+
   function extractParts(body) {
     const parts = [];
     const sections = body.querySelectorAll([
@@ -67,9 +79,28 @@
     ].join(','));
 
     sections.forEach(section => {
-      const type = section.matches('[data-sentry-component="NarratorBubble"]')
-        ? 'narration'
-        : 'message';
+      const forcedNarration = section.matches('[data-sentry-component="NarratorBubble"]');
+      const paragraphs = Array.from(section.querySelectorAll('.chat p'));
+
+      if (paragraphs.length) {
+        paragraphs.forEach(paragraph => {
+          const text = paragraph.innerText || paragraph.textContent || '';
+          const meaningfulNodes = Array.from(paragraph.childNodes).filter(node =>
+            node.nodeType === Node.ELEMENT_NODE ||
+            (node.nodeType === Node.TEXT_NODE && clean(node.textContent))
+          );
+          const narration = forcedNarration || (
+            meaningfulNodes.length > 0 &&
+            meaningfulNodes.every(node =>
+              node.nodeType === Node.ELEMENT_NODE &&
+              node.matches('em, i')
+            )
+          );
+          pushPart(parts, narration ? 'narration' : 'message', text);
+        });
+        return;
+      }
+
       const chats = Array.from(section.querySelectorAll('.chat'));
       let text = clean(chats.length
         ? chats.map(node => node.innerText || node.textContent || '').join('\n\n')
@@ -77,20 +108,28 @@
 
       const label = clean(section.querySelector('.caption1')?.innerText || '');
       if (label && text.startsWith(label)) text = clean(text.slice(label.length));
-      if (text) parts.push({ type, text });
+      pushPart(parts, forcedNarration ? 'narration' : 'message', text);
     });
 
     if (!parts.length) {
       const text = clean(body.innerText || body.textContent || '');
-      if (text) parts.push({ type: 'message', text });
+      pushPart(parts, 'message', text);
     }
     return parts;
   }
 
   function extractImages(body) {
+    const ignored = [
+      '/profile-image/',
+      '/user-plot-chat-profile-image/',
+      '/icon/',
+      'zeta_watermark'
+    ];
+
     return Array.from(body.querySelectorAll('img[src]'))
       .map(img => ({ src: img.currentSrc || img.src, alt: clean(img.alt) }))
-      .filter((item, index, all) => item.src && all.findIndex(x => x.src === item.src) === index);
+      .filter(item => item.src && !ignored.some(token => item.src.includes(token)))
+      .filter((item, index, all) => all.findIndex(x => x.src === item.src) === index);
   }
 
   function readMessage(body) {
@@ -100,6 +139,11 @@
       parts: extractParts(body),
       images: extractImages(body)
     };
+  }
+
+  function messageNumber(id) {
+    const match = String(id || '').match(/^message-MESSAGE-(\d+)-/);
+    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
   }
 
   function mergeOrder(existing, incoming) {
@@ -221,7 +265,7 @@
       lines.push('---', '');
     });
 
-    return lines.join('\\n').trim() + '\\n';
+    return lines.join('\n').trim() + '\n';
   }
 
   async function exportAll() {
@@ -339,7 +383,15 @@
 
       if (cancelled) throw new DOMException('Cancelled', 'AbortError');
       order = chronologicalOrder.length ? chronologicalOrder : capture(messages, order);
-      const items = order.map(id => messages.get(id)).filter(Boolean);
+      /*
+       * Zeta의 MESSAGE 번호는 생성 순서대로 증가한다.
+       * 가상 스크롤의 DOM 배치와 무관하게 과거→최신 순서를 강제한다.
+       */
+      const orderIndex = new Map(order.map((id, index) => [id, index]));
+      const items = Array.from(messages.values()).sort((a, b) => {
+        const difference = messageNumber(a.id) - messageNumber(b.id);
+        return difference || (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0);
+      });
       const meta = {
         title: titleFromPage(),
         url: location.href,
