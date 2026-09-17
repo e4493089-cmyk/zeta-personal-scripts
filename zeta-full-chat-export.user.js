@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta Full Chat Export
 // @namespace    zeta-personal-tools
-// @version      0.1.4
+// @version      0.1.5
 // @description  로드되지 않은 이전 메시지까지 거슬러 올라가 Zeta 대화 전체를 요약용 Markdown으로 저장합니다.
 // @match        https://zeta-ai.io/*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-full-chat-export.user.js
@@ -384,12 +384,12 @@
       if (cancelled) throw new DOMException('Cancelled', 'AbortError');
       order = chronologicalOrder.length ? chronologicalOrder : capture(messages, order);
       /*
-       * Zeta의 MESSAGE 번호는 생성 순서대로 증가한다.
-       * 가상 스크롤의 DOM 배치와 무관하게 과거→최신 순서를 강제한다.
+       * Zeta의 MESSAGE 번호는 오래된 메시지일수록 크다.
+       * 가상 스크롤의 DOM 배치와 무관하게 번호 내림차순으로 과거→최신을 강제한다.
        */
       const orderIndex = new Map(order.map((id, index) => [id, index]));
       const items = Array.from(messages.values()).sort((a, b) => {
-        const difference = messageNumber(a.id) - messageNumber(b.id);
+        const difference = messageNumber(b.id) - messageNumber(a.id);
         return difference || (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0);
       });
       const meta = {
