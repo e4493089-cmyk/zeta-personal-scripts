@@ -237,22 +237,28 @@
       order = capture(messages, order);
       updatePanel('이전 대화를 불러오는 중…', `${messages.size}개 수집`);
 
+      const reverse = getComputedStyle(log).flexDirection.includes('reverse');
+      previousCount = messages.size;
+
       while (!cancelled) {
-        const beforeTop = log.scrollTop;
         const beforeHeight = log.scrollHeight;
-        const step = Math.max(480, log.clientHeight * .82);
-        log.scrollBy({ top: -step, behavior: 'auto' });
-        await wait(900);
+        const target = reverse ? -(log.scrollHeight + log.clientHeight) : 0;
+        log.scrollTo({ top: target, behavior: 'auto' });
+
+        /* 끝으로 바로 점프한 뒤 새 과거 묶음이 붙을 최소 시간만 기다린다. */
+        await wait(320);
         order = capture(messages, order);
 
-        const moved = Math.abs(log.scrollTop - beforeTop) > 2;
         const resized = Math.abs(log.scrollHeight - beforeHeight) > 2;
         const grew = messages.size > previousCount;
         previousCount = messages.size;
-        stableAtEdge = (!moved && !resized && !grew) ? stableAtEdge + 1 : 0;
+        stableAtEdge = (!resized && !grew) ? stableAtEdge + 1 : 0;
 
-        updatePanel('이전 대화를 불러오는 중…', `${messages.size}개 수집 · 맨 처음 확인 ${stableAtEdge}/12`);
-        if (stableAtEdge >= 12) break;
+        updatePanel('이전 대화를 빠르게 불러오는 중…', `${messages.size}개 수집 · 맨 처음 확인 ${stableAtEdge}/5`);
+        if (stableAtEdge >= 5) break;
+
+        /* 네트워크 응답이 아직 안 왔을 때만 조금 더 양보한다. */
+        await wait(grew || resized ? 60 : 380);
       }
 
       if (cancelled) throw new DOMException('Cancelled', 'AbortError');
