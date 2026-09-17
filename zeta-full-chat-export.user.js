@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta Full Chat Export
 // @namespace    zeta-personal-tools
-// @version      0.1.2
+// @version      0.1.3
 // @description  로드되지 않은 이전 메시지까지 거슬러 올라가 Zeta 대화 전체를 요약용 Markdown으로 저장합니다.
 // @match        https://zeta-ai.io/*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-full-chat-export.user.js
@@ -241,10 +241,18 @@
     let previousCount = 0;
 
     try {
+      const reverse = getComputedStyle(log).flexDirection.includes('reverse');
+
+      /* 실행 위치와 관계없이 최신 메시지를 먼저 기준점으로 잡는다. */
+      log.scrollTo({
+        top: reverse ? 0 : log.scrollHeight,
+        behavior: 'auto'
+      });
+      await wait(180);
       order = capture(messages, order);
+      const latestAnchorId = order[order.length - 1] || '';
       updatePanel('이전 대화를 불러오는 중…', `${messages.size}개 수집`);
 
-      const reverse = getComputedStyle(log).flexDirection.includes('reverse');
       previousCount = messages.size;
 
       while (!cancelled) {
@@ -261,8 +269,8 @@
         previousCount = messages.size;
         stableAtEdge = (!resized && !grew) ? stableAtEdge + 1 : 0;
 
-        updatePanel('이전 대화를 빠르게 불러오는 중…', `${messages.size}개 수집 · 맨 처음 확인 ${stableAtEdge}/5`);
-        if (stableAtEdge >= 5) break;
+        updatePanel('이전 대화를 빠르게 불러오는 중…', `${messages.size}개 수집 · 맨 처음 확인 ${stableAtEdge}/8`);
+        if (stableAtEdge >= 8) break;
 
         /* 네트워크 응답이 아직 안 왔을 때만 조금 더 양보한다. */
         await wait(grew || resized ? 60 : 380);
@@ -276,6 +284,7 @@
        */
       let chronologicalOrder = [];
       let stableAtBottom = 0;
+      let stalledAwayFromLatest = 0;
       chronologicalOrder = capture(messages, chronologicalOrder);
       updatePanel('처음부터 순서대로 확인 중…', `${messages.size}개 수집`);
 
@@ -293,15 +302,39 @@
         const atBottom = reverse
           ? Math.abs(log.scrollTop) < 3
           : log.scrollTop + log.clientHeight >= log.scrollHeight - 3;
+        const latestVisible = !latestAnchorId || !!document.getElementById(latestAnchorId);
 
-        stableAtBottom = atBottom && !moved && !grew ? stableAtBottom + 1 : 0;
+        /*
+         * 가상 스크롤이 중간에서 scrollTop을 0으로 재설정할 수 있다.
+         * 실제 최신 메시지 기준점까지 다시 보였을 때만 완료로 판정한다.
+         */
+        stableAtBottom = atBottom && latestVisible && !moved && !grew
+          ? stableAtBottom + 1
+          : 0;
+        stalledAwayFromLatest = atBottom && !latestVisible && !moved
+          ? stalledAwayFromLatest + 1
+          : 0;
+
         updatePanel(
           '처음부터 순서대로 확인 중…',
-          `${messages.size}개 수집 · 끝 확인 ${stableAtBottom}/2`
+          latestVisible
+            ? `${messages.size}개 수집 · 끝 확인 ${stableAtBottom}/3`
+            : `${messages.size}개 수집 · 최신 대화까지 계속 이동 중…`
         );
 
-        if (stableAtBottom >= 2) break;
-        if (!moved && !atBottom) await wait(220);
+        if (stableAtBottom >= 3) break;
+
+        if (stalledAwayFromLatest >= 3) {
+          /* 경계에서 로딩이 멎으면 살짝 되짚었다가 다시 내려가 로딩을 재촉한다. */
+          log.scrollBy({ top: reverse ? -160 : -160, behavior: 'auto' });
+          await wait(100);
+          log.scrollBy({ top: step + 160, behavior: 'auto' });
+          await wait(420);
+          chronologicalOrder = capture(messages, chronologicalOrder);
+          stalledAwayFromLatest = 0;
+        } else if (!moved) {
+          await wait(atBottom ? 420 : 220);
+        }
       }
 
       if (cancelled) throw new DOMException('Cancelled', 'AbortError');
