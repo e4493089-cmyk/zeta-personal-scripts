@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta Full Chat Export
 // @namespace    zeta-personal-tools
-// @version      0.1.1
+// @version      0.1.2
 // @description  로드되지 않은 이전 메시지까지 거슬러 올라가 Zeta 대화 전체를 요약용 Markdown으로 저장합니다.
 // @match        https://zeta-ai.io/*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-full-chat-export.user.js
@@ -139,6 +139,13 @@
 
   function capture(messages, order) {
     const bodies = Array.from(document.querySelectorAll(MESSAGE_SELECTOR));
+    const log = findChatLog();
+
+    /* Zeta 채팅은 column-reverse라 DOM 순서가 최신→과거다. 저장 순서는 과거→최신으로 맞춘다. */
+    if (log && getComputedStyle(log).flexDirection.includes('reverse')) {
+      bodies.reverse();
+    }
+
     const ids = [];
     bodies.forEach(body => {
       if (!body.id) return;
@@ -262,7 +269,43 @@
       }
 
       if (cancelled) throw new DOMException('Cancelled', 'AbortError');
-      order = capture(messages, order);
+
+      /*
+       * 맨 처음 대화에서 최신 대화까지 다시 훑는다.
+       * 한 화면보다 조금 작게 이동해 가상 스크롤 사이의 메시지도 빠뜨리지 않는다.
+       */
+      let chronologicalOrder = [];
+      let stableAtBottom = 0;
+      chronologicalOrder = capture(messages, chronologicalOrder);
+      updatePanel('처음부터 순서대로 확인 중…', `${messages.size}개 수집`);
+
+      while (!cancelled) {
+        const beforeTop = log.scrollTop;
+        const beforeCount = messages.size;
+        const step = Math.max(320, log.clientHeight * 0.82);
+
+        log.scrollBy({ top: step, behavior: 'auto' });
+        await wait(90);
+        chronologicalOrder = capture(messages, chronologicalOrder);
+
+        const moved = Math.abs(log.scrollTop - beforeTop) > 2;
+        const grew = messages.size > beforeCount;
+        const atBottom = reverse
+          ? Math.abs(log.scrollTop) < 3
+          : log.scrollTop + log.clientHeight >= log.scrollHeight - 3;
+
+        stableAtBottom = atBottom && !moved && !grew ? stableAtBottom + 1 : 0;
+        updatePanel(
+          '처음부터 순서대로 확인 중…',
+          `${messages.size}개 수집 · 끝 확인 ${stableAtBottom}/2`
+        );
+
+        if (stableAtBottom >= 2) break;
+        if (!moved && !atBottom) await wait(220);
+      }
+
+      if (cancelled) throw new DOMException('Cancelled', 'AbortError');
+      order = chronologicalOrder.length ? chronologicalOrder : capture(messages, order);
       const items = order.map(id => messages.get(id)).filter(Boolean);
       const meta = {
         title: titleFromPage(),
