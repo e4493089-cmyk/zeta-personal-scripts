@@ -1,0 +1,22 @@
+// ==UserScript==
+// @name         Zeta RM 진단 3 (검색 커버리지)
+// @namespace    zeta-room-manager-diag3
+// @version      0.3.0
+// @description  어떤 방이 캐릭터명/제작자명을 못 받아왔는지, 검색어가 왜 안 걸리는지 확인.
+// @match        https://zeta-ai.io/*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+(() => {
+'use strict'; if (window.top !== window.self) return;
+const KEY='zeta-room-manager:v1';
+const load=()=>{try{return JSON.parse(localStorage.getItem(KEY)||'{}')}catch(_){return{}}};
+const norm=v=>String(v||'').replace(/\s+/g,' ').trim();
+const rooms=st=>Object.values(st.index||{}).filter(e=>e&&e.type==='room');
+const metaOf=(st,e)=>(st.plotMeta&&e&&e.plotId)?st.plotMeta[e.plotId]:null;
+const allNames=(st,e)=>{const m=metaOf(st,e);return [].concat(e.characterNames||[],e.creatorNames||[],m?.characterNames||[],m?.creatorNames||[],m?.name?[m.name]:[]).map(norm).filter(Boolean)};
+function overview(){const st=load(),rs=rooms(st),out=[],L=s=>out.push(String(s));L('=== 개요 ===');L('인덱싱된 방: '+rs.length);let hc=0,hr=0,hp=0,ho=0;rs.forEach(e=>{const m=metaOf(st,e);if((e.characterNames||[]).length||(m?.characterNames||[]).length)hc++;if((e.creatorNames||[]).length||(m?.creatorNames||[]).length)hr++;if(e.plotId)hp++;if(e.originatedId)ho++});L('plotId 있음: '+hp+' / originatedId 있음: '+ho);L('캐릭터명 확보: '+hc+' / 제작자명 확보: '+hr);const pm=Object.values(st.plotMeta||{}),failed=pm.filter(p=>p&&p.failedAt);L('플롯 캐시: '+pm.length+'개 / 조회 실패 기록: '+failed.length+'개');L('');L('=== 데이터 없는 방 (최대 15개) ===');const missing=rs.filter(e=>{const m=metaOf(st,e);return !((e.creatorNames||[]).length||(m?.creatorNames||[]).length)});L('제작자명 없는 방: '+missing.length+'개');missing.slice(0,15).forEach(e=>{const m=metaOf(st,e);L('· '+(e.alias||e.original));L('   plotId='+(e.plotId||'없음')+' originatedId='+(e.originatedId||'없음'));L('   캐시='+(m?('char'+((m.characterNames||[]).length)+'/cre'+((m.creatorNames||[]).length)):'없음'))});return out.join('\n')}
+function explain(query){const st=load(),q=norm(query).toLocaleLowerCase('ko-KR'),out=[],L=s=>out.push(String(s));L('=== 검색어: "'+query+'" ===');if(!q){L('(비어있음)');return out.join('\n')}const hits=[];rooms(st).forEach(e=>{const fields=[];if(norm(e.alias).toLocaleLowerCase('ko-KR').includes(q))fields.push('별명');if(norm(e.original).toLocaleLowerCase('ko-KR').includes(q))fields.push('방제목');const m=metaOf(st,e);if(m&&norm(m.name).toLocaleLowerCase('ko-KR').includes(q))fields.push('플롯명');[].concat(e.characterNames||[],m?.characterNames||[]).forEach(n=>{if(norm(n).toLocaleLowerCase('ko-KR').includes(q))fields.push('캐릭터:'+n)});[].concat(e.creatorNames||[],m?.creatorNames||[]).forEach(n=>{if(norm(n).toLocaleLowerCase('ko-KR').includes(q))fields.push('제작자:'+n)});if(fields.length)hits.push({e,fields:[...new Set(fields)]})});L('걸린 방: '+hits.length+'개');hits.slice(0,20).forEach(h=>L('· '+(h.e.alias||h.e.original)+'  ['+h.fields.join(', ')+']'));return out.join('\n')}
+function panel(text){document.getElementById('zrm-diag3-overlay')?.remove();const o=document.createElement('div');o.id='zrm-diag3-overlay';o.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#111;color:#eee;font:12px/1.5 ui-monospace,monospace;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all';const bar=document.createElement('div');bar.style.cssText='position:sticky;top:0;background:#111;padding:8px 0;display:flex;gap:8px;flex-wrap:wrap';const input=document.createElement('input');input.placeholder='캐릭터/제작자명 입력';input.style.cssText='flex:1;min-width:120px;padding:9px 12px;background:#222;color:#eee';const body=document.createElement('div');body.textContent=text;body.style.userSelect='text';const mk=(l,f)=>{const b=document.createElement('button');b.textContent=l;b.onclick=f;return b};const run=()=>body.textContent=explain(input.value);input.addEventListener('keydown',e=>{if(e.key==='Enter')run()});bar.append(input,mk('검색',run),mk('개요',()=>body.textContent=overview()),mk('복사',()=>navigator.clipboard?.writeText(body.textContent)),mk('닫기',()=>o.remove()));o.append(bar,body);document.body.appendChild(o)}
+function addButton(){if(!document.body||document.getElementById('zrm-diag3-btn'))return;const b=document.createElement('button');b.id='zrm-diag3-btn';b.textContent='검색진단';b.style.cssText='position:fixed;right:14px;bottom:214px;z-index:2147483646;padding:12px 14px';b.onclick=()=>panel(overview());document.body.appendChild(b)}setInterval(addButton,1000);
+})();
