@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta Room Manager 숨김 프로필 수집
 // @namespace    zeta-room-manager-hidden-collector
-// @version      0.1.3
+// @version      0.1.5
 // @description  대화방 목록을 유지하며 숨긴 화면에서 방과 플롯 프로필을 차례로 열어 이름을 채웁니다.
 // @match        https://zeta-ai.io/ko/rooms
 // @match        https://zeta-ai.io/ko/rooms/
@@ -12,11 +12,12 @@
   'use strict';
   if (window !== window.top) return;
   const STATE_KEY = 'zeta-room-manager:v1';
+  const SESSION_KEY = 'zrm-hidden-collector-session:v1';
   const uuid = /^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i;
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const names = value => Array.isArray(value) ? [...new Set(value.map(x => String(x || '').trim()).filter(Boolean))] : [];
   let active = false;
-  let iframe = null;
+  const frames = new Set();
   let jobs = [];
   let completed = 0;
   let results = [];
@@ -26,6 +27,17 @@
   let wakeLock = null;
   let wakeStatus = '';
   let wakeEvents = [];
+  try {
+    const previous = JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}');
+    results = Array.isArray(previous.results) ? previous.results : [];
+    failures = Array.isArray(previous.failures) ? previous.failures : [];
+    wakeEvents = Array.isArray(previous.wakeEvents) ? previous.wakeEvents : [];
+    completed = results.length;
+    verified = completed > 0;
+  } catch (_) {}
+  function preserve() {
+    try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ results, failures, wakeEvents })); } catch (_) {}
+  }
   const logWake = (event, detail = '') => wakeEvents.push({ at: new Date().toISOString(), event, detail });
 
   async function holdScreen() {
@@ -85,7 +97,8 @@
     const state = getState();
     const joined = mergeKnown(state);
     putState(state);
-    const missing = Object.values(state.index || {}).filter(e => e?.type === 'room' && uuid.test(e.id || '') &&
+    const failedIds = new Set(failures.map(item => item.roomId));
+    const missing = Object.values(state.index || {}).filter(e => e?.type === 'room' && uuid.test(e.id || '') && !failedIds.has(e.id) &&
       (!names(e.characterNames).length || !names(e.creatorNames).length));
     const seen = new Set();
     jobs = missing.filter(e => !seen.has(e.plotId) && seen.add(e.plotId)).map(e => e.id);
@@ -123,9 +136,15 @@
     const button = (label, handler) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.style.cssText = 'margin:6px 5px 0 0;padding:7px;border:0;border-radius:6px;background:#fff;color:#17121f'; b.onclick = handler; element.append(b); };
     if (!active) {
       button('1개 숨김 테스트', () => start(1));
-      if (verified) button('남은 방 계속', () => start(Infinity));
+      button('3개 창 동시 수집', () => start(3));
+      if (failures.length) button('실패 항목 재시도', () => { failures = []; preserve(); prepare(); status = '실패 항목을 다시 수집할 수 있습니다.'; panel(); });
     } else {
-      button('중지', () => { active = false; iframe?.remove(); iframe = null; void releaseScreen(); status = '중지됨. 수집한 이름은 저장됐습니다.'; panel(); });
+      button('중지', () => {
+        active = false;
+        for (const frame of frames) frame.remove();
+        frames.clear();
+        void releaseScreen(); status = '중지됨. 수집한 이름은 저장됐습니다.'; panel();
+      });
       if (!wakeLock) button('화면 켜짐 재시도', () => { void holdScreen(); });
     }
     if (completed || failures.length) {
@@ -151,21 +170,22 @@
   }
 
   async function visit(roomId) {
-    iframe = document.createElement('iframe');
-    iframe.setAttribute('aria-hidden', 'true');
-    iframe.tabIndex = -1;
-    iframe.style.cssText = 'position:fixed;left:-10000px;top:-10000px;width:390px;height:850px;opacity:0;pointer-events:none;border:0';
-    document.body.append(iframe);
-    iframe.src = '/ko/rooms/' + roomId;
+    const frame = document.createElement('iframe');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.tabIndex = -1;
+    frame.style.cssText = 'position:fixed;left:-10000px;top:-10000px;width:390px;height:850px;opacity:0;pointer-events:none;border:0';
+    frames.add(frame);
+    document.body.append(frame);
+    frame.src = '/ko/rooms/' + roomId;
     try {
       const button = await until(() => {
-        const win = iframe.contentWindow;
+        const win = frame.contentWindow;
         if (!win || !win.location.pathname.includes(roomId)) return null;
         return win.document.querySelector('button[data-testid="chat-header-profile"][aria-label="Open plot profile"]');
       }, 18000, '숨긴 방 화면이 열리지 않았습니다. 프레임 차단 또는 로딩 실패일 수 있습니다.');
       button.click();
       const result = await until(() => {
-        const win = iframe.contentWindow;
+        const win = frame.contentWindow;
         if (!win || !/^\/ko\/plots\/[a-f\d-]{36}\/profile\/?$/i.test(win.location.pathname)) return null;
         const root = win.document.querySelector('[data-sentry-component="PlotProfile"]');
         if (!root) return null;
@@ -177,7 +197,10 @@
         return { creator, characters, profileId: win.location.pathname.split('/')[3] };
       }, 18000, '프로필 또는 제작자명을 읽지 못했습니다.');
       return result;
-    } finally { iframe.remove(); iframe = null; }
+    } finally {
+      if (frame.isConnected) { frame.src = 'about:blank'; frame.remove(); }
+      frames.delete(frame);
+    }
   }
 
   function commit(roomId, result) {
@@ -206,40 +229,38 @@
     const counts = prepare();
     if (!counts.rooms) { active = false; await wakePromise; await releaseScreen(); status = '빈 이름이 없습니다. Room Manager의 대화방 전체 수집을 먼저 실행했는지도 확인하세요.'; panel(); return; }
     await wakePromise;
-    let attempted = 0;
     let successes = 0;
     status = `내 플롯 ${counts.joined}개 매칭 · 빈 방 ${counts.rooms}개 (${counts.uniquePlots}개 플롯).`;
     panel();
-    while (active && jobs.length && attempted < limit) {
-      const roomId = jobs[0];
-      status = `수집 중… ${completed + failures.length + 1}번째 플롯의 방을 확인합니다.`;
-      panel();
+    const batch = jobs.slice(0, limit);
+    status = `수집 중… 숨긴 창 ${batch.length}개를 동시에 열어 프로필을 확인합니다.`;
+    panel();
+    await Promise.all(batch.map(async roomId => {
       try {
         const result = await visit(roomId);
+        if (!active) return;
         commit(roomId, result);
         results.push({ roomId, ...result });
         completed++;
         successes++;
         verified = true;
+        preserve();
       } catch (e) {
-        if (!active) break;
+        if (!active) return;
         failures.push({ roomId, reason: String(e.message || e) });
-        // 숨김 프레임 자체가 막혔으면 뒤의 방을 계속 열지 않는다.
-        if (/프레임 차단|숨긴 방 화면/.test(String(e.message || e))) {
-          status = `숨김 방식 확인 실패: ${e.message}`;
-          active = false; await releaseScreen(); panel(); return;
-        }
+        preserve();
       }
-      jobs.shift(); attempted++;
+      jobs = jobs.filter(id => id !== roomId);
       panel();
-      if (active && jobs.length && attempted < limit) await sleep(1500);
-    }
+    }));
+    if (!active) return;
     active = false;
     await releaseScreen();
     status = limit === 1 ?
-      (successes ? '숨김 테스트 완료. JSON을 저장하거나 남은 방을 계속 수집하세요.' : '숨김 테스트 실패. 테스트 결과 JSON에서 이유를 확인하세요.') :
-      '수집 완료. JSON을 저장하고 Room Manager 화면을 새로고침하면 반영됩니다.';
+      (successes ? '숨김 테스트 완료. JSON을 저장하거나 다음 3개를 수집하세요.' : '숨김 테스트 실패. 테스트 결과 JSON에서 이유를 확인하세요.') :
+      (jobs.length ? '동시 3개 수집 종료. 숨긴 창을 모두 닫았습니다. 새로고침한 뒤 다음 3개를 누르세요.' : '수집 완료. JSON을 저장하고 Room Manager 화면을 새로고침하면 반영됩니다.');
     panel();
   }
+  prepare();
   panel();
 })();
