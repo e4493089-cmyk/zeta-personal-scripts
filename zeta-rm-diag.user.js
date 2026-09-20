@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta RM 진단 스크립트
 // @namespace    zeta-room-manager-diag
-// @version      1.0.0
+// @version      1.1.0
 // @description  Zeta Room Manager 통합 진단 스크립트 — 방 데이터, API, 검색 커버리지, 플롯 조회 탐색.
 // @match        https://zeta-ai.io/*
 // @run-at       document-start
@@ -396,4 +396,140 @@ async function findRoomRaw(plotId){let cursor='';for(let page=0;page<30;page++){
 async function run(plotId,body){const out=[],L=s=>{out.push(String(s));body.textContent=out.join('\n')};L('plotId: '+plotId);L('토큰: '+(token()?'있음':'없음'));L('');L('=== /v2/rooms 원본 데이터 찾는 중… ===');L(await findRoomRaw(plotId));const paths=['/v1/plots/'+plotId,'/v2/plots/'+plotId,'/v1/plots/'+plotId+'/about','/v1/plots/'+plotId+'/characters','/v1/me/plots?limit=30','/v1/plots/mine?limit=30','/v1/plots/private?limit=30','/v1/plots/created?limit=30'];L('');L('=== 엔드포인트 탐색 ===');for(const p of paths){L('');L('▶ '+p);L(await probe(p))}L('');L('완료')}
 function panel(){document.getElementById('zrm-diag4')?.remove();const o=document.createElement('div');o.id='zrm-diag4';o.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#111;color:#eee;font:12px/1.5 ui-monospace,monospace;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all';const bar=document.createElement('div');bar.style.cssText='position:sticky;top:0;background:#111;padding:8px 0;display:flex;gap:8px;flex-wrap:wrap';const input=document.createElement('input');input.value='f7fcfbcb-45e6-4a96-b325-3fd366beedf7';input.style.cssText='flex:1;min-width:140px;padding:9px 12px;background:#222;color:#eee';const body=document.createElement('div');body.textContent='플롯 ID 확인하고 [실행]을 누르세요.';body.style.userSelect='text';const mk=(l,f)=>{const b=document.createElement('button');b.textContent=l;b.onclick=f;return b};bar.append(input,mk('실행',()=>run(norm(input.value),body)),mk('복사',()=>navigator.clipboard?.writeText(body.textContent)),mk('닫기',()=>o.remove()));o.append(bar,body);document.body.appendChild(o)}
 function addButton(){if(!document.body||document.getElementById('zrm-diag4-btn'))return;const b=document.createElement('button');b.id='zrm-diag4-btn';b.textContent='플롯탐색';b.style.cssText='position:fixed;right:14px;bottom:278px;z-index:2147483646;padding:12px 14px';b.onclick=panel;document.body.appendChild(b)}setInterval(addButton,1000);
+})();
+
+
+/* ===== 통합 드롭다운 런처 + 드래그 위치 ===== */
+(() => {
+  'use strict';
+  if (window.top !== window.self) return;
+
+  const POS_KEY = 'zrm-diag-launcher-pos:v1';
+  const IDS = ['zrm-diag-btn', 'zrm-diag2-btn', 'zrm-diag3-btn', 'zrm-diag4-btn'];
+
+  function hideOldButtons() {
+    IDS.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.setProperty('display', 'none', 'important');
+    });
+  }
+
+  function clickOld(id) {
+    const el = document.getElementById(id);
+    if (el) el.click();
+    else alert('진단 기능이 아직 준비되지 않았어요. 잠시 후 다시 눌러주세요.');
+  }
+
+  function savedPos() {
+    try { return JSON.parse(localStorage.getItem(POS_KEY) || 'null'); } catch (_) { return null; }
+  }
+
+  function savePos(el) {
+    const r = el.getBoundingClientRect();
+    localStorage.setItem(POS_KEY, JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top) }));
+  }
+
+  function clamp(el, left, top) {
+    const w = el.offsetWidth || 92, h = el.offsetHeight || 44;
+    return {
+      left: Math.max(6, Math.min(window.innerWidth - w - 6, left)),
+      top: Math.max(6, Math.min(window.innerHeight - h - 6, top))
+    };
+  }
+
+  function addLauncher() {
+    hideOldButtons();
+    if (!document.body || document.getElementById('zrm-diag-launcher')) return;
+
+    const wrap = document.createElement('div');
+    wrap.id = 'zrm-diag-launcher';
+    wrap.style.cssText = 'position:fixed;z-index:2147483646;font:700 13px/1.2 system-ui,sans-serif;touch-action:none;user-select:none;-webkit-user-select:none';
+
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.textContent = '진단 ▾';
+    main.style.cssText = 'display:block;padding:11px 15px;border:0;border-radius:22px;background:#ff5c5c;color:#fff;font:inherit;box-shadow:0 4px 14px rgba(0,0,0,.35);white-space:nowrap';
+
+    const menu = document.createElement('div');
+    menu.style.cssText = 'display:none;position:absolute;right:0;bottom:calc(100% + 7px);min-width:150px;padding:6px;background:#181818;border:1px solid #444;border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,.45)';
+
+    [
+      ['방 데이터 진단', 'zrm-diag-btn'],
+      ['API 탐색', 'zrm-diag2-btn'],
+      ['검색 커버리지', 'zrm-diag3-btn'],
+      ['플롯 조회 탐색', 'zrm-diag4-btn']
+    ].forEach(([label, id]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.style.cssText = 'display:block;width:100%;padding:10px 11px;border:0;border-radius:8px;background:transparent;color:#fff;text-align:left;font:600 13px/1.2 system-ui,sans-serif;white-space:nowrap';
+      b.addEventListener('click', e => {
+        e.stopPropagation();
+        menu.style.display = 'none';
+        clickOld(id);
+      });
+      menu.appendChild(b);
+    });
+
+    wrap.append(menu, main);
+    document.body.appendChild(wrap);
+
+    const p = savedPos();
+    if (p && Number.isFinite(p.left) && Number.isFinite(p.top)) {
+      const q = clamp(wrap, p.left, p.top);
+      wrap.style.left = q.left + 'px';
+      wrap.style.top = q.top + 'px';
+    } else {
+      wrap.style.right = '14px';
+      wrap.style.bottom = '88px';
+    }
+
+    let dragging = false, moved = false, sx = 0, sy = 0, sl = 0, st = 0;
+
+    main.addEventListener('pointerdown', e => {
+      dragging = true; moved = false;
+      const r = wrap.getBoundingClientRect();
+      sx = e.clientX; sy = e.clientY; sl = r.left; st = r.top;
+      main.setPointerCapture?.(e.pointerId);
+    });
+
+    main.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (!moved && Math.hypot(dx, dy) < 5) return;
+      moved = true;
+      const q = clamp(wrap, sl + dx, st + dy);
+      wrap.style.right = 'auto'; wrap.style.bottom = 'auto';
+      wrap.style.left = q.left + 'px'; wrap.style.top = q.top + 'px';
+      e.preventDefault();
+    });
+
+    const finish = e => {
+      if (!dragging) return;
+      dragging = false;
+      try { main.releasePointerCapture?.(e.pointerId); } catch (_) {}
+      if (moved) savePos(wrap);
+    };
+    main.addEventListener('pointerup', finish);
+    main.addEventListener('pointercancel', finish);
+
+    main.addEventListener('click', e => {
+      if (moved) { moved = false; e.preventDefault(); return; }
+      menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+    });
+
+    document.addEventListener('pointerdown', e => {
+      if (!wrap.contains(e.target)) menu.style.display = 'none';
+    });
+
+    window.addEventListener('resize', () => {
+      const r = wrap.getBoundingClientRect(), q = clamp(wrap, r.left, r.top);
+      wrap.style.right = 'auto'; wrap.style.bottom = 'auto';
+      wrap.style.left = q.left + 'px'; wrap.style.top = q.top + 'px';
+      savePos(wrap);
+    });
+  }
+
+  addLauncher();
+  setInterval(() => { hideOldButtons(); addLauncher(); }, 800);
 })();
