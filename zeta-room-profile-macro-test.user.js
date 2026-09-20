@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 방 프로필 화면 수집 테스트 (최대 3개)
 // @namespace    zeta-room-manager-diagnostic
-// @version      0.1.2
+// @version      0.1.3
 // @description  Room Manager 백업과 내 플롯을 ID로 대조하고, 빈 방 세 개까지 실제 화면 이동으로 검사합니다.
 // @match        https://zeta-ai.io/ko/rooms*
 // @match        https://zeta-ai.io/ko/rooms/*
@@ -76,8 +76,7 @@
     if (waiting) return;
     if (data.stage === 'room' && roomId === data.current) {
       waiting = true;
-      waitFor(() => [...document.querySelectorAll('button[data-sentry-component="LogRawButton"]')]
-        .find(button => button.querySelector('span.title16')?.textContent.trim() === clean(getRoom()?.original)), button => {
+      waitFor(() => document.querySelector('button[data-testid="chat-header-profile"][aria-label="Open plot profile"]'), button => {
         observe('room-before-header-click');
         data.stage = 'profile'; save(data);
         button.click(); // 사이트의 실제 채팅 헤더 버튼을 누른다.
