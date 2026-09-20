@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta Room Manager 숨김 프로필 수집
 // @namespace    zeta-room-manager-hidden-collector
-// @version      0.1.0
+// @version      0.1.1
 // @description  대화방 목록을 유지하며 숨긴 화면에서 방과 플롯 프로필을 차례로 열어 이름을 채웁니다.
 // @match        https://zeta-ai.io/ko/rooms
 // @match        https://zeta-ai.io/ko/rooms/
@@ -19,6 +19,7 @@
   let iframe = null;
   let jobs = [];
   let completed = 0;
+  let results = [];
   let failures = [];
   let status = '';
   let verified = false;
@@ -53,6 +54,17 @@
     return { joined, rooms: missing.length, uniquePlots: jobs.length };
   }
 
+  function downloadJson(filename, value) {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
   function panel() {
     let element = document.getElementById('zrm-hidden-collector');
     if (!element) {
@@ -74,6 +86,14 @@
       button('1개 숨김 테스트', () => start(1));
       if (verified) button('남은 방 계속', () => start(Infinity));
     } else button('중지', () => { active = false; iframe?.remove(); iframe = null; status = '중지됨. 수집한 이름은 저장됐습니다.'; panel(); });
+    if (completed || failures.length) {
+      button('수정된 백업 JSON', () => downloadJson('zeta-room-manager-hidden-collection.json', {
+        format: 'zeta-room-manager-backup', version: 1, exportedAt: new Date().toISOString(), state: getState()
+      }));
+      button('테스트 결과 JSON', () => downloadJson('zeta-room-hidden-test-results.json', {
+        exportedAt: new Date().toISOString(), completed, remaining: jobs.length, results, failures, status
+      }));
+    }
     button('창 닫기', () => { if (!active) element.remove(); });
   }
 
@@ -142,6 +162,7 @@
     if (!counts.rooms) { status = '빈 이름이 없습니다. Room Manager의 대화방 전체 수집을 먼저 실행했는지도 확인하세요.'; panel(); return; }
     active = true;
     let attempted = 0;
+    let successes = 0;
     status = `내 플롯 ${counts.joined}개 매칭 · 빈 방 ${counts.rooms}개 (${counts.uniquePlots}개 플롯).`;
     panel();
     while (active && jobs.length && attempted < limit) {
@@ -151,7 +172,9 @@
       try {
         const result = await visit(roomId);
         commit(roomId, result);
+        results.push({ roomId, ...result });
         completed++;
+        successes++;
         verified = true;
       } catch (e) {
         if (!active) break;
@@ -167,7 +190,9 @@
       if (active && jobs.length && attempted < limit) await sleep(1500);
     }
     active = false;
-    status = attempted >= limit && jobs.length ? '숨김 테스트 완료. 계속 버튼으로 남은 방을 수집할 수 있습니다.' : '수집 완료. Room Manager 화면을 새로고침하면 저장한 이름이 반영됩니다.';
+    status = limit === 1 ?
+      (successes ? '숨김 테스트 완료. JSON을 저장하거나 남은 방을 계속 수집하세요.' : '숨김 테스트 실패. 테스트 결과 JSON에서 이유를 확인하세요.') :
+      '수집 완료. JSON을 저장하고 Room Manager 화면을 새로고침하면 반영됩니다.';
     panel();
   }
   panel();
