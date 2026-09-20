@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zeta RM 진단 스크립트
 // @namespace    zeta-room-manager-diag
-// @version      1.1.1
-// @description  Zeta Room Manager 통합 진단 스크립트 — 방 데이터, API, 검색 커버리지, 플롯 조회 탐색.
+// @version      1.2.0
+// @description  Zeta Room Manager 통합 진단 스크립트 — 방 데이터, API, 검색 커버리지, 플롯 조회 탐색, 목록 항목 데이터.
 // @match        https://zeta-ai.io/*
 // @run-at       document-start
 // @grant        none
@@ -280,7 +280,10 @@
   }
 
   function addButton() {
-    if (document.getElementById('zrm-diag-btn')) return;
+    // document-start에는 body가 아직 없다. 여기서 던지면 이 파일의
+    // 뒤쪽 모듈(API 탐색·검색 커버리지·플롯 탐색·목록 데이터·런처)이
+    // 전부 등록되지 않는다. 아래 setInterval이 다시 시도한다.
+    if (!document.body || document.getElementById('zrm-diag-btn')) return;
     const b = document.createElement('button');
     b.id = 'zrm-diag-btn';
     b.textContent = '진단';
@@ -400,12 +403,179 @@ function addButton(){if(!document.body||document.getElementById('zrm-diag4-btn')
 
 
 /* ===== 통합 드롭다운 런처 + 드래그 위치 ===== */
+// ── 목록 항목 데이터 진단 ──────────────────────────────────────────────
+// 캐릭터명·제작자명을 API 없이 읽으려면 그 값이 화면 어딘가에 있어야 한다.
+// 대화방 목록 / 내 플롯 목록 항목이 실제로 무엇을 들고 있는지 그대로 찍는다.
+(() => {
+  'use strict';
+  if (window.top !== window.self) return;
+
+  const KEYWORD = /character|creator|author|writer|plot|profile|nickname|name|persona/i;
+
+  function clean(value) {
+    return String(value || '').replace(/[ᅟᅠㅤ​-‍﻿]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function describe(value) {
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return 'Array(' + value.length + ')';
+    const type = typeof value;
+    if (type === 'string') return value.length > 120 ? value.slice(0, 120) + '…' : value;
+    if (type === 'object') return 'Object{' + Object.keys(value).slice(0, 12).join(',') + '}';
+    return String(value);
+  }
+
+  function walkProps(root, out, path, depth, seen) {
+    if (!root || typeof root !== 'object' || depth > 5 || out.length >= 150) return;
+    if (seen.has(root)) return;
+    seen.add(root);
+
+    const entries = Array.isArray(root)
+      ? root.slice(0, 8).map((v, i) => [String(i), v])
+      : Object.entries(root).slice(0, 40);
+
+    for (const [key, value] of entries) {
+      if (['children', 'ref', '_owner', 'return', 'stateNode', '_store', 'memoizedState'].includes(key)) continue;
+      const next = path ? path + '.' + key : key;
+      if (value && typeof value === 'object') {
+        out.push(next + ' = ' + describe(value));
+        walkProps(value, out, next, depth + 1, seen);
+      } else if (typeof value === 'string' && value.trim()) {
+        out.push(next + ' = ' + describe(value));
+      }
+      if (out.length >= 150) return;
+    }
+  }
+
+  function describeItem(item, label) {
+    const lines = ['───── ' + label + ' ─────'];
+
+    const link = item.querySelector('a[href]');
+    lines.push('href: ' + (link ? link.getAttribute('href') : '(없음)'));
+
+    const texts = [];
+    for (const el of item.querySelectorAll('*')) {
+      if (el.children.length) continue;
+      const text = clean(el.textContent);
+      if (text && !texts.includes(text)) texts.push(text);
+    }
+    lines.push('화면 글자: ' + (texts.length ? texts.join(' | ') : '(없음)'));
+
+    const images = Array.from(item.querySelectorAll('img')).map(img => img.getAttribute('src') || '');
+    lines.push('이미지: ' + (images.length ? images.join(' , ') : '(없음)'));
+
+    const dataKeys = Object.keys(item.dataset || {});
+    lines.push('data 속성: ' + (dataKeys.length ? dataKeys.map(k => k + '=' + item.dataset[k]).join(' , ') : '(없음)'));
+
+    const fiberKey = Object.keys(item).find(key => key.startsWith('__reactFiber$'));
+    if (!fiberKey) {
+      lines.push('React: fiber 없음');
+      return lines.join('\n');
+    }
+
+    let fiber = item[fiberKey];
+    let found = false;
+    for (let depth = 0; fiber && depth < 10; depth++, fiber = fiber.return) {
+      const paths = [];
+      const seen = new WeakSet();
+      for (const props of [fiber.memoizedProps, fiber.pendingProps]) {
+        if (props && typeof props === 'object') walkProps(props, paths, '', 0, seen);
+      }
+      const useful = paths.filter(line => KEYWORD.test(line));
+      if (!useful.length) continue;
+      found = true;
+      lines.push('React props (조상 ' + depth + '단계):');
+      for (const line of useful.slice(0, 70)) lines.push('  ' + line);
+    }
+    if (!found) lines.push('React props: 관련 키 없음 (character/creator/plot/name 등)');
+
+    return lines.join('\n');
+  }
+
+  function roomItems() {
+    const set = new Set(document.querySelectorAll('[data-sentry-component="SwipeableRoomListItem"]'));
+    document.querySelectorAll('a[href*="/rooms/"]').forEach(link => {
+      const item = link.closest('[data-sentry-component="SwipeableRoomListItem"], li, [role="listitem"]')
+        || (link.parentElement && link.parentElement.parentElement);
+      if (item) set.add(item);
+    });
+    return Array.from(set);
+  }
+
+  function plotItems() {
+    return Array.from(document.querySelectorAll('[data-sentry-component="CreatorCenterMyPlotListItem"]'));
+  }
+
+  function buildReport() {
+    const rooms = roomItems();
+    const plots = plotItems();
+    const report = [
+      'Zeta RM 진단 — 목록 항목이 들고 있는 데이터',
+      '시각: ' + new Date().toISOString(),
+      '주소: ' + location.href,
+      '화면의 대화방 항목: ' + rooms.length,
+      '화면의 플롯 항목: ' + plots.length,
+      ''
+    ];
+
+    const show = (items, kind) => {
+      if (!items.length) return;
+      report.push('══════ ' + kind + ' ══════', '');
+      items.slice(0, 5).forEach((item, i) => {
+        try {
+          report.push(describeItem(item, kind + ' ' + (i + 1)));
+        } catch (error) {
+          report.push(kind + ' ' + (i + 1) + ' 읽기 실패: ' + error);
+        }
+        report.push('');
+      });
+    };
+
+    show(rooms, '대화방');
+    show(plots, '내 플롯');
+
+    if (!rooms.length && !plots.length) {
+      report.push('목록 항목을 찾지 못했어요. 대화방 목록이나 크리에이터 센터에서 실행해 주세요.');
+    }
+    return report.join('\n');
+  }
+
+  function show() {
+    const text = buildReport();
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'zeta-rm-list-data-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function addButton() {
+    if (!document.body || document.getElementById('zrm-diag5-btn')) return;
+    const b = document.createElement('button');
+    b.id = 'zrm-diag5-btn';
+    b.textContent = '목록';
+    b.style.cssText = 'position:fixed;right:14px;bottom:206px;z-index:2147483646;padding:12px 16px;background:#5c7cff;color:#fff;border:0;border-radius:24px;font:700 14px/1 system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.4)';
+    b.addEventListener('click', show);
+    document.body.appendChild(b);
+  }
+
+  window.zrmDumpListData = show;
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', addButton, { once: true });
+  else addButton();
+  setInterval(addButton, 1500);
+})();
+
 (() => {
   'use strict';
   if (window.top !== window.self) return;
 
   const POS_KEY = 'zrm-diag-launcher-pos:v1';
-  const IDS = ['zrm-diag-btn', 'zrm-diag2-btn', 'zrm-diag3-btn', 'zrm-diag4-btn'];
+  const IDS = ['zrm-diag-btn', 'zrm-diag2-btn', 'zrm-diag3-btn', 'zrm-diag4-btn', 'zrm-diag5-btn'];
 
   function hideOldButtons() {
     IDS.forEach(id => {
@@ -465,7 +635,8 @@ function addButton(){if(!document.body||document.getElementById('zrm-diag4-btn')
       ['방 데이터 진단', 'zrm-diag-btn'],
       ['API 탐색', 'zrm-diag2-btn'],
       ['검색 커버리지', 'zrm-diag3-btn'],
-      ['플롯 조회 탐색', 'zrm-diag4-btn']
+      ['플롯 조회 탐색', 'zrm-diag4-btn'],
+      ['목록 항목 데이터', 'zrm-diag5-btn']
     ].forEach(([label, id]) => {
       const b = document.createElement('button');
       b.type = 'button';
