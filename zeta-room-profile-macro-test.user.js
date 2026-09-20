@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 방 프로필 화면 수집 테스트 (최대 3개)
 // @namespace    zeta-room-manager-diagnostic
-// @version      0.1.1
+// @version      0.1.2
 // @description  Room Manager 백업과 내 플롯을 ID로 대조하고, 빈 방 세 개까지 실제 화면 이동으로 검사합니다.
 // @match        https://zeta-ai.io/ko/rooms*
 // @match        https://zeta-ai.io/ko/rooms/*
@@ -103,13 +103,18 @@
         }
         data.results.push({ roomId: data.current, plotId, profileId, ...result });
         data.current = null;
-        data.stage = 'list';
+        data.stage = 'between';
+        data.message = `수집 ${data.results.length}개 완료. 다음 방으로 이동 중.`;
         save(data);
-        location.assign('/ko/rooms');
+        // 목록을 다시 여는 과정에서 사이트가 자동 이동을 막거나 상태를 초기화할 수 있어
+        // 저장된 다음 방으로 곧바로 이동한다. 테스트 상자의 중지는 항상 사용할 수 있다.
+        setTimeout(next, 600);
       }, '프로필 DOM 또는 제작자 링크를 찾지 못했습니다.');
     } else if (data.stage === 'list' && location.pathname === '/ko/rooms') {
       observe('list-after-profile');
       next();
+    } else if (data.stage === 'between') {
+      return;
     } else {
       stop('예상하지 못한 화면입니다: ' + location.pathname);
     }
