@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta Room Manager 숨김 프로필 수집
 // @namespace    zeta-room-manager-hidden-collector
-// @version      0.1.6
+// @version      0.1.7
 // @description  대화방 목록을 유지하며 숨긴 화면에서 방과 플롯 프로필을 차례로 열어 이름을 채웁니다.
 // @match        https://zeta-ai.io/ko/rooms
 // @match        https://zeta-ai.io/ko/rooms/
@@ -82,16 +82,48 @@
   function putState(state) {
     localStorage.setItem(STATE_KEY, JSON.stringify(state));
   }
+  const idsOf = (...values) => values.map(v => String(v || '').trim()).filter(Boolean);
+
+  // 내 플롯 목록(index의 plot 항목)뿐 아니라 plotMeta도 본다.
+  // plotMeta에만 있는 플롯을 놓치면 이미 아는 플롯을 다시 열게 된다.
+  function knownPlotIndex(state) {
+    const map = new Map();
+    const put = (keys, value) => {
+      for (const key of keys) if (!map.has(key)) map.set(key, value);
+    };
+    for (const meta of Object.values(state.plotMeta || {})) {
+      if (!meta) continue;
+      put(idsOf(meta.plotId, meta.canonicalId, meta.sourcePlotId, meta.originatedId), meta);
+    }
+    for (const entry of Object.values(state.index || {})) {
+      if (entry?.type !== 'plot') continue;
+      put(idsOf(entry.plotId, entry.id, entry.originatedId), entry);
+    }
+    return map;
+  }
+
+  function knownFor(map, room) {
+    for (const key of idsOf(room?.plotId, room?.originatedId)) {
+      const hit = map.get(key);
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   function mergeKnown(state) {
-    const plots = new Map(Object.values(state.index || {}).filter(e => e?.type === 'plot' && uuid.test(e.plotId || '')).map(e => [e.plotId, e]));
+    const map = knownPlotIndex(state);
     let joined = 0;
     for (const room of Object.values(state.index || {})) {
       if (room?.type !== 'room') continue;
-      const plot = plots.get(room.plotId);
+      const plot = knownFor(map, room);
       if (!plot) continue;
+      const characters = names([...names(room.characterNames), ...names(plot.characterNames)]);
+      const creators = names([...names(room.creatorNames), ...names(plot.creatorNames)]);
+      if (characters.length === names(room.characterNames).length &&
+          creators.length === names(room.creatorNames).length) continue;
       joined++;
-      room.characterNames = names([...names(room.characterNames), ...names(plot.characterNames)]);
-      room.creatorNames = names([...names(room.creatorNames), ...names(plot.creatorNames)]);
+      room.characterNames = characters;
+      room.creatorNames = creators;
     }
     return joined;
   }
@@ -103,10 +135,28 @@
     }
     putState(state);
     const handledIds = new Set([...failures.map(item => item.roomId), ...results.map(item => item.roomId)]);
+
+    // 이미 다녀온 방이 속한 플롯은 다시 열지 않는다.
+    // (성공은 applyResult가 같은 플롯 방을 모두 채우고, 실패는 재시도해도 같은 결과다)
+    const handledPlots = new Set();
+    for (const roomId of handledIds) {
+      const entry = state.index?.['room:' + roomId];
+      for (const key of idsOf(entry?.plotId, entry?.originatedId)) handledPlots.add(key);
+    }
+
     const missing = Object.values(state.index || {}).filter(e => e?.type === 'room' && uuid.test(e.id || '') && !handledIds.has(e.id) &&
       (!names(e.characterNames).length || !names(e.creatorNames).length));
+
     const seen = new Set();
-    jobs = missing.filter(e => !seen.has(e.plotId) && seen.add(e.plotId)).map(e => e.id);
+    jobs = missing.filter(e => {
+      const keys = idsOf(e.plotId, e.originatedId);
+      // 플롯 ID를 모르는 방은 묶을 근거가 없으므로 따로 확인한다.
+      if (!keys.length) return true;
+      if (keys.some(key => handledPlots.has(key) || seen.has(key))) return false;
+      for (const key of keys) seen.add(key);
+      return true;
+    }).map(e => e.id);
+
     return { joined, rooms: missing.length, uniquePlots: jobs.length };
   }
 
