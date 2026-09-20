@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta RM 진단 스크립트
 // @namespace    zeta-room-manager-diag
-// @version      1.1.0
+// @version      1.1.1
 // @description  Zeta Room Manager 통합 진단 스크립트 — 방 데이터, API, 검색 커버리지, 플롯 조회 탐색.
 // @match        https://zeta-ai.io/*
 // @run-at       document-start
@@ -439,7 +439,15 @@ function addButton(){if(!document.body||document.getElementById('zrm-diag4-btn')
 
   function addLauncher() {
     hideOldButtons();
-    if (!document.body || document.getElementById('zrm-diag-launcher')) return;
+    if (!document.body) return;
+    const existing = document.getElementById('zrm-diag-launcher');
+    if (existing) {
+      const r = existing.getBoundingClientRect();
+      const visible = r.width > 0 && r.height > 0 && r.right > 0 && r.bottom > 0 && r.left < window.innerWidth && r.top < window.innerHeight;
+      if (visible) return;
+      existing.remove();
+      try { localStorage.removeItem(POS_KEY); } catch (_) {}
+    }
 
     const wrap = document.createElement('div');
     wrap.id = 'zrm-diag-launcher';
@@ -476,9 +484,11 @@ function addButton(){if(!document.body||document.getElementById('zrm-diag4-btn')
 
     const p = savedPos();
     if (p && Number.isFinite(p.left) && Number.isFinite(p.top)) {
-      const q = clamp(wrap, p.left, p.top);
-      wrap.style.left = q.left + 'px';
-      wrap.style.top = q.top + 'px';
+      wrap.style.left = '0px'; wrap.style.top = '0px';
+      requestAnimationFrame(() => {
+        const q = clamp(wrap, p.left, p.top);
+        wrap.style.left = q.left + 'px'; wrap.style.top = q.top + 'px';
+      });
     } else {
       wrap.style.right = '14px';
       wrap.style.bottom = '88px';
@@ -530,6 +540,8 @@ function addButton(){if(!document.body||document.getElementById('zrm-diag4-btn')
     });
   }
 
-  addLauncher();
+  const boot = () => { addLauncher(); setTimeout(addLauncher, 100); setTimeout(addLauncher, 500); };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });
+  else boot();
   setInterval(() => { hideOldButtons(); addLauncher(); }, 800);
 })();
