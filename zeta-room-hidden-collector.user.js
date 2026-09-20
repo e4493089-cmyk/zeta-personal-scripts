@@ -146,7 +146,7 @@
     panel();
     while (active && jobs.length && attempted < limit) {
       const roomId = jobs[0];
-      status = `수집 중… ${completed + attempted + 1}번째 플롯의 방을 확인합니다.`;
+      status = `수집 중… ${completed + failures.length + 1}번째 플롯의 방을 확인합니다.`;
       panel();
       try {
         const result = await visit(roomId);
