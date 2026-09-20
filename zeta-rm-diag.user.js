@@ -1,16 +1,122 @@
 // ==UserScript==
 // @name         Zeta RM 진단 (임시)
 // @namespace    zeta-room-manager-diag
-// @version      0.1.0
+// @version      0.2.0
 // @description  Room Manager 캐릭터명/제작자명 검색 문제 진단용. 확인 끝나면 삭제하세요.
 // @match        https://zeta-ai.io/*
-// @run-at       document-idle
+// @run-at       document-start
 // @grant        none
 // ==/UserScript==
 
 (() => {
   'use strict';
   if (window.top !== window.self) return;
+
+  const capturedRooms = [];
+
+  function scanPlotKeys(value, path = [], depth = 0, seen = new WeakSet(), out = []) {
+    if (value == null || depth > 7 || out.length >= 120) return out;
+    if (typeof value !== 'object') return out;
+    if (seen.has(value)) return out;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      value.slice(0, 80).forEach((v, i) => scanPlotKeys(v, path.concat(i), depth + 1, seen, out));
+      return out;
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      const next = path.concat(key);
+      if (/plot|origin|scenario|character|creator|author/i.test(key)) {
+        let preview = child;
+        if (child && typeof child === 'object') {
+          try { preview = JSON.stringify(child).slice(0, 500); }
+          catch (_) { preview = '[object]'; }
+        }
+        out.push(next.join('.') + ' = ' + String(preview).slice(0, 500));
+        if (out.length >= 120) break;
+      }
+      if (child && typeof child === 'object') scanPlotKeys(child, next, depth + 1, seen, out);
+      if (out.length >= 120) break;
+    }
+    return out;
+  }
+
+  function inspectRoomsPayload(payload, url) {
+    const roots = [];
+    if (Array.isArray(payload)) roots.push(...payload);
+    if (payload && typeof payload === 'object') {
+      for (const key of ['rooms', 'items', 'data', 'results', 'content']) {
+        const v = payload[key];
+        if (Array.isArray(v)) roots.push(...v);
+        else if (v && typeof v === 'object') {
+          for (const sub of ['rooms', 'items', 'results', 'content']) {
+            if (Array.isArray(v[sub])) roots.push(...v[sub]);
+          }
+        }
+      }
+    }
+
+    const room = roots.find(v => v && typeof v === 'object') || payload;
+    capturedRooms.unshift({
+      at: new Date().toISOString(),
+      url: String(url || ''),
+      sample: room,
+      keys: scanPlotKeys(room)
+    });
+    if (capturedRooms.length > 5) capturedRooms.length = 5;
+  }
+
+  function isRoomsUrl(url) {
+    return /\/v2\/rooms(?:[/?#]|$)/i.test(String(url || ''));
+  }
+
+  function installRoomsInterceptor() {
+    if (window.__zrmDiagRoomsInterceptor) return;
+    window.__zrmDiagRoomsInterceptor = true;
+
+    const originalFetch = window.fetch;
+    if (typeof originalFetch === 'function') {
+      window.fetch = async function () {
+        const response = await originalFetch.apply(this, arguments);
+        try {
+          const req = arguments[0];
+          const url = typeof req === 'string' ? req : req && req.url;
+          if (isRoomsUrl(url)) {
+            response.clone().json().then(data => inspectRoomsPayload(data, url)).catch(() => {});
+          }
+        } catch (_) {}
+        return response;
+      };
+    }
+
+    const originalOpen = XMLHttpRequest.prototype.open;
+    const originalSend = XMLHttpRequest.prototype.send;
+    const urls = new WeakMap();
+
+    XMLHttpRequest.prototype.open = function (method, url) {
+      try { urls.set(this, String(url || '')); } catch (_) {}
+      return originalOpen.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.send = function () {
+      const xhr = this;
+      const url = urls.get(xhr) || '';
+      if (isRoomsUrl(url)) {
+        xhr.addEventListener('load', () => {
+          try {
+            const data = xhr.responseType === 'json'
+              ? xhr.response
+              : JSON.parse(xhr.responseText || 'null');
+            inspectRoomsPayload(data, url);
+          } catch (_) {}
+        }, { once: true });
+      }
+      return originalSend.apply(this, arguments);
+    };
+  }
+
+  installRoomsInterceptor();
 
   function collect() {
     const out = [];
@@ -26,6 +132,22 @@
 
     L('URL: ' + location.pathname);
     L('=== 화면의 방 아이템: ' + arr.length + '개 ===');
+
+    L('');
+    L('=== /v2/rooms 응답 캡처 ===');
+    if (!capturedRooms.length) {
+      L('아직 캡처 없음 — 진단 스크립트를 켠 상태로 /ko/rooms를 새로고침하세요.');
+    } else {
+      const cap = capturedRooms[0];
+      L('URL: ' + cap.url);
+      L('캡처 시각: ' + cap.at);
+      L('--- plot/character/creator 관련 키 ---');
+      if (cap.keys.length) cap.keys.forEach(x => L(x));
+      else L('(관련 키 없음)');
+      L('--- 방 객체 샘플 (최대 5000자) ---');
+      try { L(JSON.stringify(cap.sample, null, 2).slice(0, 5000)); }
+      catch (_) { L(String(cap.sample).slice(0, 5000)); }
+    }
 
     try {
       const st = JSON.parse(localStorage.getItem('zeta-room-manager:v1') || '{}');
