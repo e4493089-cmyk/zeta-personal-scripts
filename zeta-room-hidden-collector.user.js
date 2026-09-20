@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta Room Manager 숨김 프로필 수집
 // @namespace    zeta-room-manager-hidden-collector
-// @version      0.1.1
+// @version      0.1.2
 // @description  대화방 목록을 유지하며 숨긴 화면에서 방과 플롯 프로필을 차례로 열어 이름을 채웁니다.
 // @match        https://zeta-ai.io/ko/rooms
 // @match        https://zeta-ai.io/ko/rooms/
@@ -23,6 +23,38 @@
   let failures = [];
   let status = '';
   let verified = false;
+  let wakeLock = null;
+  let wakeStatus = '';
+
+  async function holdScreen() {
+    if (!navigator.wakeLock?.request) { wakeStatus = '화면 켜짐 기능 미지원'; panel(); return; }
+    if (wakeLock || !active || document.visibilityState !== 'visible') return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      if (!active) { await releaseScreen(); return; }
+      const held = wakeLock;
+      held.addEventListener('release', () => {
+        if (wakeLock !== held) return;
+        wakeLock = null;
+        wakeStatus = '화면 켜짐 유지가 해제됐습니다';
+        panel();
+      });
+      wakeStatus = '화면 켜짐 유지 중';
+    } catch (error) {
+      wakeStatus = '화면 켜짐 유지 실패: ' + (error?.name || '브라우저 제한');
+    }
+    panel();
+  }
+  async function releaseScreen() {
+    const held = wakeLock;
+    wakeLock = null;
+    wakeStatus = '';
+    if (held) { try { await held.release(); } catch (_) {} }
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (active && document.visibilityState === 'visible') void holdScreen();
+  });
+  window.addEventListener('pagehide', () => { active = false; void releaseScreen(); });
 
   function getState() {
     try { return JSON.parse(localStorage.getItem(STATE_KEY) || '{}'); } catch { return {}; }
@@ -78,6 +110,7 @@
     const detail = document.createElement('div'); detail.style.margin = '6px 0';
     detail.textContent = status || '대화방 목록에서 숨김 화면 수집을 시작할 수 있습니다.'; element.append(detail);
     const count = document.createElement('div'); count.textContent = `수집 ${completed}개 · 남은 플롯 ${jobs.length}개 · 실패 ${failures.length}개`; element.append(count);
+    if (wakeStatus) { const wake = document.createElement('div'); wake.textContent = wakeStatus; element.append(wake); }
     if (failures.length) {
       const failed = document.createElement('div'); failed.textContent = '최근 실패: ' + failures.at(-1).reason; failed.style.color = '#ffb7b7'; element.append(failed);
     }
@@ -85,7 +118,7 @@
     if (!active) {
       button('1개 숨김 테스트', () => start(1));
       if (verified) button('남은 방 계속', () => start(Infinity));
-    } else button('중지', () => { active = false; iframe?.remove(); iframe = null; status = '중지됨. 수집한 이름은 저장됐습니다.'; panel(); });
+    } else button('중지', () => { active = false; iframe?.remove(); iframe = null; void releaseScreen(); status = '중지됨. 수집한 이름은 저장됐습니다.'; panel(); });
     if (completed || failures.length) {
       button('수정된 백업 JSON', () => downloadJson('zeta-room-manager-hidden-collection.json', {
         format: 'zeta-room-manager-backup', version: 1, exportedAt: new Date().toISOString(), state: getState()
@@ -161,6 +194,7 @@
     const counts = prepare();
     if (!counts.rooms) { status = '빈 이름이 없습니다. Room Manager의 대화방 전체 수집을 먼저 실행했는지도 확인하세요.'; panel(); return; }
     active = true;
+    void holdScreen();
     let attempted = 0;
     let successes = 0;
     status = `내 플롯 ${counts.joined}개 매칭 · 빈 방 ${counts.rooms}개 (${counts.uniquePlots}개 플롯).`;
@@ -182,7 +216,7 @@
         // 숨김 프레임 자체가 막혔으면 뒤의 방을 계속 열지 않는다.
         if (/프레임 차단|숨긴 방 화면/.test(String(e.message || e))) {
           status = `숨김 방식 확인 실패: ${e.message}`;
-          active = false; panel(); return;
+          active = false; await releaseScreen(); panel(); return;
         }
       }
       jobs.shift(); attempted++;
@@ -190,6 +224,7 @@
       if (active && jobs.length && attempted < limit) await sleep(1500);
     }
     active = false;
+    await releaseScreen();
     status = limit === 1 ?
       (successes ? '숨김 테스트 완료. JSON을 저장하거나 남은 방을 계속 수집하세요.' : '숨김 테스트 실패. 테스트 결과 JSON에서 이유를 확인하세요.') :
       '수집 완료. JSON을 저장하고 Room Manager 화면을 새로고침하면 반영됩니다.';
