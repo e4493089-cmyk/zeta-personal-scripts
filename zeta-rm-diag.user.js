@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta RM 진단 스크립트
 // @namespace    zeta-room-manager-diag
-// @version      1.2.0
+// @version      1.2.1
 // @description  Zeta Room Manager 통합 진단 스크립트 — 방 데이터, API, 검색 커버리지, 플롯 조회 탐색, 목록 항목 데이터.
 // @match        https://zeta-ai.io/*
 // @run-at       document-start
@@ -558,7 +558,9 @@ function addButton(){if(!document.body||document.getElementById('zrm-diag4-btn')
     const b = document.createElement('button');
     b.id = 'zrm-diag5-btn';
     b.textContent = '목록';
-    b.style.cssText = 'position:fixed;right:14px;bottom:206px;z-index:2147483646;padding:12px 16px;background:#5c7cff;color:#fff;border:0;border-radius:24px;font:700 14px/1 system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.4)';
+    // 화면에 띄우지 않는다. 런처 메뉴("목록 항목 데이터")가 이 버튼을 대신 누른다.
+    // 보이게 만들면 런처가 숨기기 전까지 깜빡이며 떠 있다.
+    b.style.cssText = 'display:none!important';
     b.addEventListener('click', show);
     document.body.appendChild(b);
   }
