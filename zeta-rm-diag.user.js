@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zeta RM 진단 스크립트
 // @namespace    zeta-room-manager-diag
-// @version      0.2.0
-// @description  Zeta Room Manager 데이터/응답 구조 진단 스크립트.
+// @version      1.0.0
+// @description  Zeta Room Manager 통합 진단 스크립트 — 방 데이터, API, 검색 커버리지, 플롯 조회 탐색.
 // @match        https://zeta-ai.io/*
 // @run-at       document-start
 // @grant        none
@@ -293,4 +293,107 @@
 
   addButton();
   setInterval(addButton, 1500);
+})();
+
+
+/* ===== API 탐색 ===== */
+(() => {
+  'use strict';
+  if (window.top !== window.self) return;
+  const log = [], MAX = 60;
+  function note(method, url, bodyText) {
+    if (log.length >= MAX) return;
+    let hit = '', keys = '';
+    if (bodyText) {
+      try { keys = summarizeKeys(JSON.parse(bodyText), 0).slice(0, 40).join(', '); } catch (_) { keys = '(JSON 아님)'; }
+      const found = new Set();
+      const re = /"([a-zA-Z_]*(?:creator|character|author|nickname)[a-zA-Z_]*)"\s*:\s*("(?:[^"\\]|\\.){0,60}")/gi;
+      let m; while ((m = re.exec(bodyText)) && found.size < 12) found.add(m[1] + '=' + m[2]);
+      if (found.size) hit = [...found].join(' | ');
+    }
+    log.push({ method, url, keys, hit });
+  }
+  function summarizeKeys(v, depth, prefix = '') {
+    if (depth > 3 || v == null || typeof v !== 'object') return [];
+    if (Array.isArray(v)) return v.length ? summarizeKeys(v[0], depth + 1, prefix + '[].') : [];
+    const out = [];
+    for (const k of Object.keys(v).slice(0, 25)) {
+      out.push(prefix + k);
+      const child = v[k];
+      if (child && typeof child === 'object') out.push(...summarizeKeys(child, depth + 1, prefix + k + '.'));
+      if (out.length > 60) break;
+    }
+    return out;
+  }
+  const origFetch = window.fetch;
+  window.fetch = function (...args) {
+    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+    const method = args[1]?.method || 'GET';
+    return origFetch.apply(this, args).then(res => {
+      try {
+        if (/zeta-ai\.io|api/i.test(url) && !/image\.|_next\/static|\.js$|\.css$|sentry/i.test(url))
+          res.clone().text().then(t => note('fetch ' + method, url, t.slice(0, 200000))).catch(() => {});
+      } catch (_) {}
+      return res;
+    });
+  };
+  const origOpen = XMLHttpRequest.prototype.open, origSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (m, u, ...rest) { this.__zrmMethod = m; this.__zrmUrl = u; return origOpen.call(this, m, u, ...rest); };
+  XMLHttpRequest.prototype.send = function (...a) {
+    this.addEventListener('load', () => {
+      try {
+        const u = this.__zrmUrl || '';
+        if (/zeta-ai\.io|api/i.test(u) && !/image\.|_next\/static|\.js$|\.css$|sentry/i.test(u))
+          note('xhr ' + (this.__zrmMethod || ''), u, String(this.responseText || '').slice(0, 200000));
+      } catch (_) {}
+    });
+    return origSend.apply(this, a);
+  };
+  function buildReport() {
+    const out = [], L = s => out.push(String(s));
+    L('=== 가로챈 요청: ' + log.length + '개 ==='); L('');
+    log.forEach((e, i) => { L('[' + i + '] ' + e.method + ' ' + e.url); if (e.hit) L('   ★ 제작자/캐릭터 후보: ' + e.hit); if (e.keys) L('   keys: ' + e.keys); L(''); });
+    L('=== __NEXT_DATA__ ===');
+    try { const nd = window.__NEXT_DATA__; L(nd ? JSON.stringify(nd).slice(0, 800) : '없음'); } catch (_) { L('읽기 실패'); }
+    return out.join('\n');
+  }
+  function show() {
+    const report = buildReport(); document.getElementById('zrm-diag2-overlay')?.remove();
+    const o=document.createElement('div'); o.id='zrm-diag2-overlay'; o.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#111;color:#eee;font:12px/1.5 ui-monospace,monospace;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all';
+    const bar=document.createElement('div'); bar.style.cssText='position:sticky;top:0;background:#111;padding:8px 0;display:flex;gap:8px;padding-top:calc(8px + env(safe-area-inset-top,0px))';
+    const mk=(label,fn)=>{const b=document.createElement('button');b.textContent=label;b.style.cssText='padding:10px 18px;background:#6d52ff;color:#fff;border:0;border-radius:8px;font:inherit;font-size:14px';b.addEventListener('click',fn);return b;};
+    const copy=()=>navigator.clipboard?.writeText(report).then(()=>alert('복사됐어요!')).catch(()=>{});
+    bar.append(mk('복사',copy),mk('닫기',()=>o.remove())); const pre=document.createElement('div');pre.textContent=report;pre.style.userSelect='text';o.append(bar,pre);document.body.appendChild(o);
+  }
+  function addButton(){if(!document.body||document.getElementById('zrm-diag2-btn'))return;const b=document.createElement('button');b.id='zrm-diag2-btn';b.textContent='API';b.style.cssText='position:fixed;right:14px;bottom:150px;z-index:2147483646;padding:12px 16px;background:#2ea44f;color:#fff;border:0;border-radius:24px;font:700 14px/1 system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.4)';b.addEventListener('click',show);document.body.appendChild(b);}
+  setInterval(addButton,1000);
+})();
+
+/* ===== 검색 커버리지 ===== */
+(() => {
+'use strict'; if (window.top !== window.self) return;
+const KEY='zeta-room-manager:v1';
+const load=()=>{try{return JSON.parse(localStorage.getItem(KEY)||'{}')}catch(_){return{}}};
+const norm=v=>String(v||'').replace(/\s+/g,' ').trim();
+const rooms=st=>Object.values(st.index||{}).filter(e=>e&&e.type==='room');
+const metaOf=(st,e)=>(st.plotMeta&&e&&e.plotId)?st.plotMeta[e.plotId]:null;
+const allNames=(st,e)=>{const m=metaOf(st,e);return [].concat(e.characterNames||[],e.creatorNames||[],m?.characterNames||[],m?.creatorNames||[],m?.name?[m.name]:[]).map(norm).filter(Boolean)};
+function overview(){const st=load(),rs=rooms(st),out=[],L=s=>out.push(String(s));L('=== 개요 ===');L('인덱싱된 방: '+rs.length);let hc=0,hr=0,hp=0,ho=0;rs.forEach(e=>{const m=metaOf(st,e);if((e.characterNames||[]).length||(m?.characterNames||[]).length)hc++;if((e.creatorNames||[]).length||(m?.creatorNames||[]).length)hr++;if(e.plotId)hp++;if(e.originatedId)ho++});L('plotId 있음: '+hp+' / originatedId 있음: '+ho);L('캐릭터명 확보: '+hc+' / 제작자명 확보: '+hr);const pm=Object.values(st.plotMeta||{}),failed=pm.filter(p=>p&&p.failedAt);L('플롯 캐시: '+pm.length+'개 / 조회 실패 기록: '+failed.length+'개');L('');L('=== 데이터 없는 방 (최대 15개) ===');const missing=rs.filter(e=>{const m=metaOf(st,e);return !((e.creatorNames||[]).length||(m?.creatorNames||[]).length)});L('제작자명 없는 방: '+missing.length+'개');missing.slice(0,15).forEach(e=>{const m=metaOf(st,e);L('· '+(e.alias||e.original));L('   plotId='+(e.plotId||'없음')+' originatedId='+(e.originatedId||'없음'));L('   캐시='+(m?('char'+((m.characterNames||[]).length)+'/cre'+((m.creatorNames||[]).length)):'없음'))});return out.join('\n')}
+function explain(query){const st=load(),q=norm(query).toLocaleLowerCase('ko-KR'),out=[],L=s=>out.push(String(s));L('=== 검색어: "'+query+'" ===');if(!q){L('(비어있음)');return out.join('\n')}const hits=[];rooms(st).forEach(e=>{const fields=[];if(norm(e.alias).toLocaleLowerCase('ko-KR').includes(q))fields.push('별명');if(norm(e.original).toLocaleLowerCase('ko-KR').includes(q))fields.push('방제목');const m=metaOf(st,e);if(m&&norm(m.name).toLocaleLowerCase('ko-KR').includes(q))fields.push('플롯명');[].concat(e.characterNames||[],m?.characterNames||[]).forEach(n=>{if(norm(n).toLocaleLowerCase('ko-KR').includes(q))fields.push('캐릭터:'+n)});[].concat(e.creatorNames||[],m?.creatorNames||[]).forEach(n=>{if(norm(n).toLocaleLowerCase('ko-KR').includes(q))fields.push('제작자:'+n)});if(fields.length)hits.push({e,fields:[...new Set(fields)]})});L('걸린 방: '+hits.length+'개');hits.slice(0,20).forEach(h=>L('· '+(h.e.alias||h.e.original)+'  ['+h.fields.join(', ')+']'));return out.join('\n')}
+function panel(text){document.getElementById('zrm-diag3-overlay')?.remove();const o=document.createElement('div');o.id='zrm-diag3-overlay';o.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#111;color:#eee;font:12px/1.5 ui-monospace,monospace;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all';const bar=document.createElement('div');bar.style.cssText='position:sticky;top:0;background:#111;padding:8px 0;display:flex;gap:8px;flex-wrap:wrap';const input=document.createElement('input');input.placeholder='캐릭터/제작자명 입력';input.style.cssText='flex:1;min-width:120px;padding:9px 12px;background:#222;color:#eee';const body=document.createElement('div');body.textContent=text;body.style.userSelect='text';const mk=(l,f)=>{const b=document.createElement('button');b.textContent=l;b.onclick=f;return b};const run=()=>body.textContent=explain(input.value);input.addEventListener('keydown',e=>{if(e.key==='Enter')run()});bar.append(input,mk('검색',run),mk('개요',()=>body.textContent=overview()),mk('복사',()=>navigator.clipboard?.writeText(body.textContent)),mk('닫기',()=>o.remove()));o.append(bar,body);document.body.appendChild(o)}
+function addButton(){if(!document.body||document.getElementById('zrm-diag3-btn'))return;const b=document.createElement('button');b.id='zrm-diag3-btn';b.textContent='검색진단';b.style.cssText='position:fixed;right:14px;bottom:214px;z-index:2147483646;padding:12px 14px';b.onclick=()=>panel(overview());document.body.appendChild(b)}setInterval(addButton,1000);
+})();
+
+/* ===== 플롯 조회 탐색 ===== */
+(() => {
+'use strict';if(window.top!==window.self)return;const API='https://api.zeta-ai.io',VER='3.44.7';const norm=v=>String(v||'').replace(/\s+/g,' ').trim();
+function cookie(name){try{const w=name+'=';for(const p of String(document.cookie||'').split(';')){const t=p.trim();if(t.startsWith(w))return decodeURIComponent(t.slice(w.length))}}catch(_){}return''}
+function tokenFrom(v){let t=norm(v);if(!t)return'';try{const p=JSON.parse(t);if(typeof p==='string')t=p;else if(p&&typeof p==='object')t=norm(p.accessToken||p.access_token||p.token||p.TOKEN)}catch(_){}t=t.replace(/^Bearer\s+/i,'');const m=t.match(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/);return m?m[0]:''}
+function token(){const c=tokenFrom(cookie('TOKEN'));if(c)return c;for(const s of [localStorage,sessionStorage])try{for(let i=0;i<s.length;i++){const k=s.key(i)||'';if(!/token|auth|session/i.test(k))continue;const t=tokenFrom(s.getItem(k));if(t)return t}}catch(_){}return''}
+function headers(){const t=token(),h={Accept:'application/json','X-Client-Version':VER,'X-Client-Native-Version':VER,'X-Client-Type':'web','X-Device-Type':/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)?'web':'pc_web','X-User-Language':'KOREAN'};if(t)h.Authorization='Bearer '+t;const d=norm(cookie('DEVICE_ID'));if(d)h['X-Sticky']=d;return h}
+async function probe(path){try{const res=await fetch(API+path,{headers:headers(),credentials:'include',cache:'no-store'});return res.status+' — '+(await res.text()).slice(0,600)}catch(e){return'ERR '+e}}
+async function findRoomRaw(plotId){let cursor='';for(let page=0;page<30;page++){const url=API+'/v2/rooms?limit=100'+(cursor?'&cursor='+encodeURIComponent(cursor):'');let json;try{const res=await fetch(url,{headers:headers(),credentials:'include',cache:'no-store'});if(!res.ok)return'방 목록 조회 실패: '+res.status;json=await res.json()}catch(e){return'방 목록 오류: '+e}for(const r of Array.isArray(json.rooms)?json.rooms:[]){const p=r.plot||{};if(norm(p.id)===plotId||norm(p.originatedId)===plotId)return JSON.stringify(r,null,1).slice(0,2500)}const next=norm(json.nextCursor);if(!next)break;cursor=next}return'(이 plotId를 가진 방을 /v2/rooms 응답에서 못 찾음)'}
+async function run(plotId,body){const out=[],L=s=>{out.push(String(s));body.textContent=out.join('\n')};L('plotId: '+plotId);L('토큰: '+(token()?'있음':'없음'));L('');L('=== /v2/rooms 원본 데이터 찾는 중… ===');L(await findRoomRaw(plotId));const paths=['/v1/plots/'+plotId,'/v2/plots/'+plotId,'/v1/plots/'+plotId+'/about','/v1/plots/'+plotId+'/characters','/v1/me/plots?limit=30','/v1/plots/mine?limit=30','/v1/plots/private?limit=30','/v1/plots/created?limit=30'];L('');L('=== 엔드포인트 탐색 ===');for(const p of paths){L('');L('▶ '+p);L(await probe(p))}L('');L('완료')}
+function panel(){document.getElementById('zrm-diag4')?.remove();const o=document.createElement('div');o.id='zrm-diag4';o.style.cssText='position:fixed;inset:0;z-index:2147483647;background:#111;color:#eee;font:12px/1.5 ui-monospace,monospace;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-all';const bar=document.createElement('div');bar.style.cssText='position:sticky;top:0;background:#111;padding:8px 0;display:flex;gap:8px;flex-wrap:wrap';const input=document.createElement('input');input.value='f7fcfbcb-45e6-4a96-b325-3fd366beedf7';input.style.cssText='flex:1;min-width:140px;padding:9px 12px;background:#222;color:#eee';const body=document.createElement('div');body.textContent='플롯 ID 확인하고 [실행]을 누르세요.';body.style.userSelect='text';const mk=(l,f)=>{const b=document.createElement('button');b.textContent=l;b.onclick=f;return b};bar.append(input,mk('실행',()=>run(norm(input.value),body)),mk('복사',()=>navigator.clipboard?.writeText(body.textContent)),mk('닫기',()=>o.remove()));o.append(bar,body);document.body.appendChild(o)}
+function addButton(){if(!document.body||document.getElementById('zrm-diag4-btn'))return;const b=document.createElement('button');b.id='zrm-diag4-btn';b.textContent='플롯탐색';b.style.cssText='position:fixed;right:14px;bottom:278px;z-index:2147483646;padding:12px 14px';b.onclick=panel;document.body.appendChild(b)}setInterval(addButton,1000);
 })();
