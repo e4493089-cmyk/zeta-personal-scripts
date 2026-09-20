@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Zeta RM 진단 (임시)
+// @name         Zeta RM 진단 스크립트
 // @namespace    zeta-room-manager-diag
 // @version      0.2.0
-// @description  Room Manager 캐릭터명/제작자명 검색 문제 진단용. 확인 끝나면 삭제하세요.
+// @description  Zeta Room Manager 데이터/응답 구조 진단 스크립트.
 // @match        https://zeta-ai.io/*
 // @run-at       document-start
 // @grant        none
