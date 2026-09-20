@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 방 프로필 화면 수집 테스트 (최대 3개)
 // @namespace    zeta-room-manager-diagnostic
-// @version      0.1.0
+// @version      0.1.1
 // @description  Room Manager 백업과 내 플롯을 ID로 대조하고, 빈 방 세 개까지 실제 화면 이동으로 검사합니다.
 // @match        https://zeta-ai.io/ko/rooms*
 // @match        https://zeta-ai.io/ko/rooms/*
@@ -63,8 +63,14 @@
   }
 
   let waiting = false;
+  let lastPath = location.pathname;
   function process() {
     if (!data?.active) return;
+    if (location.pathname !== lastPath) {
+      lastPath = location.pathname;
+      waiting = false; // Next.js 화면 이동은 새로고침 없이 일어나므로 다음 화면을 다시 처리한다.
+      draw();
+    }
     const roomId = location.pathname.match(roomPath)?.[1];
     const profileId = location.pathname.match(profilePath)?.[1];
     if (waiting) return;
