@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta Room Manager 숨김 프로필 수집
 // @namespace    zeta-room-manager-hidden-collector
-// @version      0.1.5
+// @version      0.1.6
 // @description  대화방 목록을 유지하며 숨긴 화면에서 방과 플롯 프로필을 차례로 열어 이름을 채웁니다.
 // @match        https://zeta-ai.io/ko/rooms
 // @match        https://zeta-ai.io/ko/rooms/
@@ -27,16 +27,18 @@
   let wakeLock = null;
   let wakeStatus = '';
   let wakeEvents = [];
+  let batches = [];
   try {
     const previous = JSON.parse(sessionStorage.getItem(SESSION_KEY) || '{}');
-    results = Array.isArray(previous.results) ? previous.results : [];
+    results = Array.isArray(previous.results) ? [...new Map(previous.results.map(item => [item.roomId, item])).values()] : [];
     failures = Array.isArray(previous.failures) ? previous.failures : [];
     wakeEvents = Array.isArray(previous.wakeEvents) ? previous.wakeEvents : [];
+    batches = Array.isArray(previous.batches) ? previous.batches : [];
     completed = results.length;
     verified = completed > 0;
   } catch (_) {}
   function preserve() {
-    try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ results, failures, wakeEvents })); } catch (_) {}
+    try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ results, failures, wakeEvents, batches })); } catch (_) {}
   }
   const logWake = (event, detail = '') => wakeEvents.push({ at: new Date().toISOString(), event, detail });
 
@@ -96,9 +98,12 @@
   function prepare() {
     const state = getState();
     const joined = mergeKnown(state);
+    for (const result of results) {
+      if (state.index?.['room:' + result.roomId]) applyResult(state, result.roomId, result);
+    }
     putState(state);
-    const failedIds = new Set(failures.map(item => item.roomId));
-    const missing = Object.values(state.index || {}).filter(e => e?.type === 'room' && uuid.test(e.id || '') && !failedIds.has(e.id) &&
+    const handledIds = new Set([...failures.map(item => item.roomId), ...results.map(item => item.roomId)]);
+    const missing = Object.values(state.index || {}).filter(e => e?.type === 'room' && uuid.test(e.id || '') && !handledIds.has(e.id) &&
       (!names(e.characterNames).length || !names(e.creatorNames).length));
     const seen = new Set();
     jobs = missing.filter(e => !seen.has(e.plotId) && seen.add(e.plotId)).map(e => e.id);
@@ -129,6 +134,7 @@
     const detail = document.createElement('div'); detail.style.margin = '6px 0';
     detail.textContent = status || '대화방 목록에서 숨김 화면 수집을 시작할 수 있습니다.'; element.append(detail);
     const count = document.createElement('div'); count.textContent = `수집 ${completed}개 · 남은 플롯 ${jobs.length}개 · 실패 ${failures.length}개`; element.append(count);
+    if (batches.length) { const last = document.createElement('div'); last.textContent = `최근 3개 창 처리: ${batches.at(-1).seconds}초`; element.append(last); }
     if (wakeStatus) { const wake = document.createElement('div'); wake.textContent = wakeStatus; wake.style.color = wakeLock ? '#baf2ba' : '#ffb7b7'; element.append(wake); }
     if (failures.length) {
       const failed = document.createElement('div'); failed.textContent = '최근 실패: ' + failures.at(-1).reason; failed.style.color = '#ffb7b7'; element.append(failed);
@@ -136,7 +142,7 @@
     const button = (label, handler) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.style.cssText = 'margin:6px 5px 0 0;padding:7px;border:0;border-radius:6px;background:#fff;color:#17121f'; b.onclick = handler; element.append(b); };
     if (!active) {
       button('1개 숨김 테스트', () => start(1));
-      button('3개 창 동시 수집', () => start(3));
+      button('전체 수집 (동시 3개)', () => start(Infinity));
       if (failures.length) button('실패 항목 재시도', () => { failures = []; preserve(); prepare(); status = '실패 항목을 다시 수집할 수 있습니다.'; panel(); });
     } else {
       button('중지', () => {
@@ -152,7 +158,7 @@
         format: 'zeta-room-manager-backup', version: 1, exportedAt: new Date().toISOString(), state: getState()
       }));
       button('테스트 결과 JSON', () => downloadJson('zeta-room-hidden-test-results.json', {
-        exportedAt: new Date().toISOString(), completed, remaining: jobs.length, results, failures, status, wakeEvents
+        exportedAt: new Date().toISOString(), completed, remaining: jobs.length, results, failures, status, wakeEvents, batches
       }));
     }
     button('창 닫기', () => { if (!active) element.remove(); });
@@ -203,8 +209,7 @@
     }
   }
 
-  function commit(roomId, result) {
-    const state = getState();
+  function applyResult(state, roomId, result) {
     const entry = state.index?.['room:' + roomId];
     if (!entry) throw new Error('방이 Room Manager 인덱스에 없습니다.');
     const plotId = entry.plotId;
@@ -218,6 +223,10 @@
     state.plotMeta[plotId] = { ...meta, plotId, canonicalId: result.profileId,
       creatorNames: names([...names(meta.creatorNames), ...result.creator]),
       characterNames: names([...names(meta.characterNames), ...result.characters]), updatedAt: Date.now() };
+  }
+  function commit(roomId, result) {
+    const state = getState();
+    applyResult(state, roomId, result);
     putState(state);
   }
 
@@ -230,12 +239,17 @@
     if (!counts.rooms) { active = false; await wakePromise; await releaseScreen(); status = '빈 이름이 없습니다. Room Manager의 대화방 전체 수집을 먼저 실행했는지도 확인하세요.'; panel(); return; }
     await wakePromise;
     let successes = 0;
+    let processedBatches = 0;
     status = `내 플롯 ${counts.joined}개 매칭 · 빈 방 ${counts.rooms}개 (${counts.uniquePlots}개 플롯).`;
     panel();
-    const batch = jobs.slice(0, limit);
-    status = `수집 중… 숨긴 창 ${batch.length}개를 동시에 열어 프로필을 확인합니다.`;
-    panel();
-    await Promise.all(batch.map(async roomId => {
+    while (active && jobs.length && (limit !== 1 || processedBatches < 1)) {
+      const batch = jobs.slice(0, limit === 1 ? 1 : 3);
+      const startedAt = performance.now();
+      const successesBefore = completed;
+      const failuresBefore = failures.length;
+      status = `수집 중… 숨긴 창 ${batch.length}개를 동시에 열어 프로필을 확인합니다. (남은 ${jobs.length}개)`;
+      panel();
+      await Promise.all(batch.map(async roomId => {
       try {
         const result = await visit(roomId);
         if (!active) return;
@@ -252,13 +266,21 @@
       }
       jobs = jobs.filter(id => id !== roomId);
       panel();
-    }));
+      }));
+      if (!active) return;
+      batches.push({ rooms: batch.length, success: completed - successesBefore, failed: failures.length - failuresBefore,
+        seconds: Math.round((performance.now() - startedAt) / 100) / 10 });
+      processedBatches++;
+      preserve(); panel();
+      if (limit === 1) break;
+      if (jobs.length) { status = '숨긴 창 3개를 닫았습니다. 다음 묶음을 준비 중…'; panel(); await sleep(2500); }
+    }
     if (!active) return;
     active = false;
     await releaseScreen();
     status = limit === 1 ?
-      (successes ? '숨김 테스트 완료. JSON을 저장하거나 다음 3개를 수집하세요.' : '숨김 테스트 실패. 테스트 결과 JSON에서 이유를 확인하세요.') :
-      (jobs.length ? '동시 3개 수집 종료. 숨긴 창을 모두 닫았습니다. 새로고침한 뒤 다음 3개를 누르세요.' : '수집 완료. JSON을 저장하고 Room Manager 화면을 새로고침하면 반영됩니다.');
+      (successes ? '숨김 테스트 완료. JSON을 저장하거나 전체 수집을 시작하세요.' : '숨김 테스트 실패. 테스트 결과 JSON에서 이유를 확인하세요.') :
+      '수집 완료. JSON을 저장하고 Room Manager 화면을 새로고침하면 반영됩니다.';
     panel();
   }
   prepare();
