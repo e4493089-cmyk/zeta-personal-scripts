@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Zeta Deleted Plot API Recorder
+// @name         Zeta API Diagnostic Recorder
 // @namespace    zeta-personal-scripts
-// @version      0.1.0
-// @description  삭제된 제타 플롯의 fetch/XHR/Next.js 응답 흔적을 기록해 JSON으로 저장합니다.
+// @version      0.2.0
+// @description  제타의 fetch/XHR, 요청 본문, 책갈피 클릭 및 화면 이동을 기록해 JSON으로 저장합니다.
 // @match        https://zeta-ai.io/*
 // @match        https://link.zeta-ai.io/*
 // @run-at       document-start
@@ -12,7 +12,7 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'zeta-deleted-plot-api-recorder-v1';
+  const STORAGE_KEY = 'zeta-api-diagnostic-recorder-v2';
   const MAX_ENTRIES = 500;
   const MAX_BODY_CHARS = 2_000_000;
 
@@ -75,9 +75,10 @@
     if (!/(^|\.)zeta-ai\.io$/i.test(url.hostname)) return false;
 
     const haystack = decodeURIComponent(url.href);
+    if (/^api\.zeta-ai\.io$/i.test(url.hostname)) return true;
     return (
       textMatchesTarget(haystack) ||
-      /\/plots?(?:\/|$)|chat-profile|share_id|profile/i.test(haystack)
+      /\/plots?(?:\/|$)|\/rooms?(?:\/|$)|bookmarks?|messages?|chats?|conversations?|cursor|chat-profile|share_id|profile/i.test(haystack)
     );
   }
 
@@ -105,6 +106,7 @@
 
     const searchable = [
       normalized.url,
+      normalized.requestBody,
       normalized.body,
       normalized.content
     ].join('\n');
@@ -164,6 +166,7 @@
               url: new URL(url || response.url, location.href).href,
               status: response.status,
               ok: response.ok,
+              requestBody: redact(init.body || input?.body || ''),
               responseHeaders: safeHeaders(response.headers),
               body: redact(body)
             });
@@ -210,6 +213,7 @@
 
     proto.open = wrappedOpen;
     proto.send = function (...args) {
+      const requestBody = redact(args[0] || '');
       this.addEventListener('loadend', () => {
         const meta = this.__zetaRecorderMeta || {};
         let body = '';
@@ -226,6 +230,7 @@
           method: meta.method || 'GET',
           url: meta.url || this.responseURL || '',
           status: this.status,
+          requestBody,
           body: redact(body)
         });
       }, { once: true });
@@ -292,13 +297,47 @@
     });
   }
 
-  function addNavigationEntry() {
+  function addNavigationEntry(source = 'page') {
     addEntry({
       kind: 'navigation',
+      source,
       url: location.href,
       title: document.title || null,
-      referrer: document.referrer || null
+      referrer: document.referrer || null,
+      historyState: redact(JSON.stringify(history.state))
     });
+  }
+
+  function patchNavigation() {
+    for (const name of ['pushState', 'replaceState']) {
+      const original = history[name];
+      if (!original || original.__zetaRecorderPatched) continue;
+      const wrapped = function (stateValue, title, url) {
+        const result = original.apply(this, arguments);
+        addEntry({
+          kind: 'history',
+          action: name,
+          url: url == null ? location.href : new URL(String(url), location.href).href,
+          historyState: redact(JSON.stringify(stateValue))
+        });
+        return result;
+      };
+      Object.defineProperty(wrapped, '__zetaRecorderPatched', { value: true });
+      history[name] = wrapped;
+    }
+
+    window.addEventListener('popstate', () => addNavigationEntry('popstate'));
+    window.addEventListener('hashchange', () => addNavigationEntry('hashchange'));
+    document.addEventListener('click', event => {
+      const item = event.target?.closest?.('[data-testid^="bookmark-item-"]');
+      if (!item) return;
+      addEntry({
+        kind: 'bookmark-click',
+        bookmarkId: String(item.dataset.testid || '').replace('bookmark-item-', ''),
+        preview: redact(item.textContent || ''),
+        url: location.href
+      });
+    }, true);
   }
 
   function updateCount() {
@@ -323,7 +362,7 @@
     const anchor = document.createElement('a');
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     anchor.href = url;
-    anchor.download = 'zeta-deleted-plot-api-' + timestamp + '.json';
+    anchor.download = 'zeta-api-diagnostic-' + timestamp + '.json';
     document.documentElement.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -383,7 +422,7 @@
       '-webkit-backdrop-filter:blur(8px)'
     ].join(';');
 
-    const save = makeButton('API 로그 저장', downloadLog, '#FEE500');
+    const save = makeButton('API 진단 저장', downloadLog, '#FEE500');
     countLabel = document.createElement('span');
     countLabel.style.cssText = 'min-width:20px;color:white;font:700 12px system-ui;text-align:center';
     const clear = makeButton('지우기', clearLog, '#E8EAEB');
@@ -395,6 +434,7 @@
 
   patchFetch();
   patchXHR();
+  patchNavigation();
   observeResources();
 
   const startDomWork = () => {
