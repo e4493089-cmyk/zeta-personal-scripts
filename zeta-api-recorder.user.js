@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Zeta API Diagnostic Recorder
 // @namespace    zeta-personal-scripts
-// @version      0.2.0
+// @version      0.2.1
 // @description  제타의 fetch/XHR, 요청 본문, 책갈피 클릭 및 화면 이동을 기록해 JSON으로 저장합니다.
 // @match        https://zeta-ai.io/*
 // @match        https://link.zeta-ai.io/*
+// @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-api-recorder.user.js
+// @downloadURL  https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-api-recorder.user.js
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
