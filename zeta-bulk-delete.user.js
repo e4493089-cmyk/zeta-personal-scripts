@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.6.2
+// @version      0.6.3
 // @description  크리에이터 센터에서 체크한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -150,7 +150,8 @@
   const style = document.createElement('style');
   style.textContent = `
     .zbd-item{position:relative!important}
-    .zbd-check-wrap{position:absolute;left:8px;top:8px;z-index:20;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:rgba(20,20,20,.82);box-shadow:0 1px 5px rgba(0,0,0,.25)}
+    .zbd-thumb-host{position:relative!important}
+    .zbd-check-wrap{position:absolute;left:3px;top:3px;z-index:20;display:block;width:auto;height:auto;margin:0;padding:0;background:transparent;border:0;box-shadow:none}
     .zbd-check{width:18px;height:18px;margin:0;accent-color:#fee500;cursor:pointer}
     .zbd-toolbar{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(18px,calc(env(safe-area-inset-bottom) + 12px));z-index:2147483600;display:flex;align-items:center;gap:8px;padding:8px;border:1px solid rgba(255,255,255,.10);border-radius:14px;background:rgba(28,28,31,.94);box-shadow:0 8px 30px rgba(0,0,0,.38);backdrop-filter:blur(10px)}
     .zbd-delete-btn,.zbd-clear-btn{border:0;border-radius:9px;padding:9px 12px;font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;white-space:nowrap}
@@ -248,9 +249,13 @@
   }
 
   function injectItem(item) {
-    if (item.querySelector(':scope > .zbd-check-wrap')) return;
+    if (item.querySelector('.zbd-check-wrap')) return;
 
     item.classList.add('zbd-item');
+
+    const host = item.querySelector('a[href*="/plots/"]');
+    if (!host) return;
+    host.classList.add('zbd-thumb-host');
 
     const wrap = document.createElement('label');
     wrap.className = 'zbd-check-wrap';
@@ -283,7 +288,7 @@
     });
 
     wrap.appendChild(checkbox);
-    item.prepend(wrap);
+    host.appendChild(wrap);
   }
 
   function injectToolbar() {
@@ -324,7 +329,7 @@
     document.querySelectorAll(ITEM).forEach(injectItem);
     document.querySelectorAll(ITEM).forEach(item => {
       const id = plotId(item);
-      const input = item.querySelector(':scope > .zbd-check-wrap .zbd-check');
+      const input = item.querySelector('.zbd-check-wrap .zbd-check');
       if (!input || !id) return;
       input.checked = selectedIds.has(id);
       input.disabled = deleting;
