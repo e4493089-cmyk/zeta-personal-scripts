@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.5.1
+// @version      0.6.0
 // @description  크리에이터 센터에서 체크한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -20,6 +20,103 @@
   const HEADER = '[data-sentry-component="CreatorCenterMyPlotListHeader"]';
   let deleting = false;
   const selectedIds = new Set();
+
+  const W = window;
+  const API = 'https://api.zeta-ai.io';
+  let auth = '';
+  let clientVersion = '';
+  let nativeVersion = '';
+  let userLanguage = 'KOREAN';
+  let deviceType = 'web';
+  let clientType = 'web';
+
+  function captureHeader(key, value) {
+    const k = String(key || '').toLowerCase();
+    const v = String(value || '');
+    if (!v) return;
+    if (k === 'authorization') auth = v;
+    else if (k === 'x-client-version') clientVersion = v;
+    else if (k === 'x-client-native-version') nativeVersion = v;
+    else if (k === 'x-user-language') userLanguage = v;
+    else if (k === 'x-device-type') deviceType = v;
+    else if (k === 'x-client-type') clientType = v;
+  }
+
+  // 제타가 원래 보내는 API 요청에서 인증/클라이언트 헤더를 가로챈다.
+  try {
+    const proto = W.XMLHttpRequest.prototype;
+    const originalSetRequestHeader = proto.setRequestHeader;
+    proto.setRequestHeader = function(key, value) {
+      try { captureHeader(key, value); } catch (_) {}
+      return originalSetRequestHeader.call(this, key, value);
+    };
+  } catch (_) {}
+
+  try {
+    const originalFetch = W.fetch;
+    W.fetch = function(input, init = {}) {
+      try {
+        const headers = init && init.headers;
+        if (headers instanceof Headers) headers.forEach((v, k) => captureHeader(k, v));
+        else if (Array.isArray(headers)) headers.forEach(([k, v]) => captureHeader(k, v));
+        else if (headers && typeof headers === 'object') {
+          Object.entries(headers).forEach(([k, v]) => captureHeader(k, v));
+        }
+      } catch (_) {}
+      return originalFetch.apply(this, arguments);
+    };
+  } catch (_) {}
+
+  function wakeZetaAuth() {
+    try {
+      document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+    } catch (_) {}
+  }
+
+  function apiHeaders() {
+    const headers = {
+      'Accept': 'application/json, text/plain, */*',
+      'Content-Type': 'application/json',
+      'X-Client-Type': clientType || 'web',
+      'X-User-Language': userLanguage || 'KOREAN',
+      'X-Device-Type': deviceType || 'web'
+    };
+    if (clientVersion) headers['X-Client-Version'] = clientVersion;
+    if (nativeVersion) headers['X-Client-Native-Version'] = nativeVersion;
+    if (auth) headers['Authorization'] = auth;
+    return headers;
+  }
+
+  function apiRequest(method, url, body) {
+    return new Promise((resolve, reject) => {
+      const xhr = new W.XMLHttpRequest();
+      xhr.open(method, url, true);
+      for (const [key, value] of Object.entries(apiHeaders())) {
+        try { xhr.setRequestHeader(key, value); } catch (_) {}
+      }
+      xhr.onload = () => {
+        let data = null;
+        try { data = xhr.responseText ? JSON.parse(xhr.responseText) : null; }
+        catch (_) { data = xhr.responseText; }
+
+        if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+        else reject(new Error(`HTTP ${xhr.status}`));
+      };
+      xhr.onerror = () => reject(new Error('네트워크 오류'));
+      xhr.send(JSON.stringify(body));
+    });
+  }
+
+  async function ensureAuth(timeout = 4000) {
+    if (auth) return true;
+    wakeZetaAuth();
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      if (auth) return true;
+      await sleep(100);
+    }
+    return false;
+  }
 
   const style = document.createElement('style');
   style.textContent = `
@@ -176,101 +273,32 @@
     updateToolbar();
   }
 
-  function menuButton(item) {
-    // 실제 카드 DOM의 오른쪽 마지막 버튼이 점 3개 메뉴 버튼이다.
-    const buttons = Array.from(item.querySelectorAll('button'))
-      .filter(button => !button.closest('.zbd-check-wrap'));
-
-    return buttons.at(-1) || null;
-  }
-
-  function findMenuDeleteButton() {
-    // 드롭다운 안에서 현재 보이는 "삭제" 버튼만 찾는다.
-    const buttons = Array.from(document.querySelectorAll('button,[role="button"],[role="menuitem"]'))
-      .filter(el =>
-        visible(el)
-        && !el.closest('.zbd-toolbar')
-        && !el.closest('.zbd-check-wrap')
-        && textOf(el) === '삭제'
-      );
-
-    // 확인 팝업의 삭제 버튼은 여기서 제외.
-    return buttons.find(button => !button.closest('[data-sentry-component="Popup"]')) || null;
-  }
-
-  function permanentDeletePopup() {
-    return Array.from(document.querySelectorAll('[data-sentry-component="Popup"]'))
-      .find(popup => {
-        const title = textOf(popup.querySelector('h5,h4,h3,h2,h1,h6'));
-        const body = textOf(popup.querySelector('p'));
-        return title === '플롯을 영구 삭제하시겠어요?'
-          && body === '삭제된 플롯과 플롯 정보는 복구할 수 없어요';
-      }) || null;
-  }
-
-  function popupDeleteButton() {
-    const popup = permanentDeletePopup();
-    if (!popup) return null;
-
-    const buttons = Array.from(popup.querySelectorAll('button'));
-    if (buttons.length >= 2 && textOf(buttons[0]) === '취소' && textOf(buttons[1]) === '삭제') {
-      return buttons[1];
-    }
-    return buttons.find(button => textOf(button) === '삭제') || null;
-  }
-
-  async function waitFor(fn, timeout = 3000, interval = 50) {
-    const end = Date.now() + timeout;
-    while (Date.now() < end) {
-      const value = fn();
-      if (value) return value;
-      await sleep(interval);
-    }
-    return null;
-  }
-
   async function deleteOne(item, index, total) {
     const id = plotId(item);
     const name = plotName(item);
 
-    if (!item?.isConnected) {
-      return { ok: false, reason: `${name}: 선택한 카드가 DOM에서 사라짐` };
+    if (!id) {
+      return { ok: false, reason: `${name}: 플롯 ID를 찾지 못함` };
     }
 
-    const menu = menuButton(item);
-    if (!menu) {
-      return { ok: false, reason: `${name}: 점 3개 버튼을 못 찾음` };
+    setStatus(`${index}/${total} · ${name} · 삭제 중`);
+
+    try {
+      const result = await apiRequest(
+        'PATCH',
+        `${API}/v1/plots/${encodeURIComponent(id)}/status`,
+        { status: 'DELETE' }
+      );
+
+      if (result?.status === 'DELETED' || result?.id === id) {
+        item.remove();
+        return { ok: true, name, id };
+      }
+
+      return { ok: false, reason: `${name}: 삭제 응답을 확인하지 못함` };
+    } catch (error) {
+      return { ok: false, reason: `${name}: ${error?.message || '삭제 요청 실패'}` };
     }
-
-    setStatus(`${index}/${total} · ${name} · 점 3개 여는 중`);
-    menu.click();
-
-    const menuDelete = await waitFor(findMenuDeleteButton, 3000, 50);
-    if (!menuDelete) {
-      return { ok: false, reason: `${name}: 메뉴의 삭제 버튼을 못 찾음` };
-    }
-
-    setStatus(`${index}/${total} · ${name} · 삭제 팝업 여는 중`);
-    menuDelete.click();
-
-    const confirm = await waitFor(popupDeleteButton, 3000, 50);
-    if (!confirm) {
-      return { ok: false, reason: `${name}: 영구 삭제 확인 팝업을 못 찾음` };
-    }
-
-    setStatus(`${index}/${total} · ${name} · 확인 누르는 중`);
-    confirm.click();
-
-    const gone = await waitFor(() => {
-      if (!id) return !item.isConnected;
-      return !Array.from(document.querySelectorAll(ITEM)).some(candidate => plotId(candidate) === id);
-    }, 8000, 100);
-
-    if (!gone) {
-      return { ok: false, reason: `${name}: 확인을 눌렀지만 카드가 사라지지 않음` };
-    }
-
-    return { ok: true, name };
   }
 
   async function startDelete() {
@@ -286,6 +314,15 @@
     deleting = true;
     refresh();
 
+    setStatus('제타 인증 확인 중…');
+    const ready = await ensureAuth();
+    if (!ready) {
+      deleting = false;
+      refresh();
+      setStatus('제타 인증 헤더를 잡지 못했어요. 페이지에서 탭 하나 눌렀다가 다시 시도해 주세요.', 8000);
+      return;
+    }
+
     let success = 0;
     let failure = null;
 
@@ -296,8 +333,7 @@
           failure = result.reason;
           break;
         }
-        const deletedId = plotId(targets[i]);
-        if (deletedId) selectedIds.delete(deletedId);
+        if (result.id) selectedIds.delete(result.id);
         success += 1;
         await sleep(350);
       } catch (error) {
