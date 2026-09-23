@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.6.0
+// @version      0.6.1
 // @description  크리에이터 센터에서 체크한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -20,6 +20,7 @@
   const HEADER = '[data-sentry-component="CreatorCenterMyPlotListHeader"]';
   let deleting = false;
   const selectedIds = new Set();
+  const selectedNames = new Map();
 
   const W = window;
   const API = 'https://api.zeta-ai.io';
@@ -178,11 +179,13 @@
     }
   }
 
-  function checkedItems() {
-    // 선택 상태는 플롯 ID로 유지하고, 실행 시점의 최신 DOM 카드를 다시 찾는다.
-    return [...selectedIds]
-      .map(id => Array.from(document.querySelectorAll(ITEM)).find(item => plotId(item) === id))
-      .filter(Boolean);
+  function selectedTargets() {
+    // API 삭제는 DOM이 필요 없다.
+    // 가상 스크롤로 화면 밖 카드가 DOM에서 사라져도 선택한 ID 전체를 그대로 처리한다.
+    return [...selectedIds].map(id => ({
+      id,
+      name: selectedNames.get(id) || id
+    }));
   }
 
   function updateToolbar() {
@@ -220,8 +223,13 @@
 
     checkbox.addEventListener('change', event => {
       event.stopPropagation();
-      if (checkbox.checked) selectedIds.add(id);
-      else selectedIds.delete(id);
+      if (checkbox.checked) {
+        selectedIds.add(id);
+        selectedNames.set(id, plotName(item));
+      } else {
+        selectedIds.delete(id);
+        selectedNames.delete(id);
+      }
       updateToolbar();
     });
 
@@ -242,6 +250,7 @@
     clear.addEventListener('click', () => {
       if (deleting) return;
       selectedIds.clear();
+      selectedNames.clear();
       document.querySelectorAll('.zbd-check:checked').forEach(input => {
         input.checked = false;
       });
@@ -273,9 +282,9 @@
     updateToolbar();
   }
 
-  async function deleteOne(item, index, total) {
-    const id = plotId(item);
-    const name = plotName(item);
+  async function deleteOne(target, index, total) {
+    const id = target?.id || '';
+    const name = target?.name || id || '플롯';
 
     if (!id) {
       return { ok: false, reason: `${name}: 플롯 ID를 찾지 못함` };
@@ -291,7 +300,11 @@
       );
 
       if (result?.status === 'DELETED' || result?.id === id) {
-        item.remove();
+        // 현재 화면에 같은 카드가 떠 있으면 즉시 제거. 화면 밖이어도 API 삭제는 이미 완료됨.
+        const visibleItem = Array.from(document.querySelectorAll(ITEM))
+          .find(item => plotId(item) === id);
+        visibleItem?.remove();
+
         return { ok: true, name, id };
       }
 
@@ -304,8 +317,8 @@
   async function startDelete() {
     if (deleting) return;
 
-    // 중요: 저장해 둔 ID가 아니라 지금 실제로 체크된 DOM을 그 순간 다시 읽는다.
-    const targets = checkedItems();
+    // 화면에 보이는 카드만이 아니라 지금까지 체크해 둔 ID 전체를 삭제한다.
+    const targets = selectedTargets();
     if (!targets.length) {
       setStatus('체크된 플롯을 찾지 못했어요.', 4000);
       return;
@@ -333,7 +346,10 @@
           failure = result.reason;
           break;
         }
-        if (result.id) selectedIds.delete(result.id);
+        if (result.id) {
+          selectedIds.delete(result.id);
+          selectedNames.delete(result.id);
+        }
         success += 1;
         await sleep(350);
       } catch (error) {
