@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.6.1
+// @version      0.6.2
 // @description  크리에이터 센터에서 체크한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -19,8 +19,36 @@
   const ITEM = '[data-sentry-component="CreatorCenterMyPlotListItem"]';
   const HEADER = '[data-sentry-component="CreatorCenterMyPlotListHeader"]';
   let deleting = false;
+
+  const SELECTED_KEY = 'zeta_bulk_delete_selected_v1';
   const selectedIds = new Set();
   const selectedNames = new Map();
+
+  function loadSelected() {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(SELECTED_KEY) || '[]');
+      if (!Array.isArray(saved)) return;
+      for (const row of saved) {
+        if (!row || !row.id) continue;
+        selectedIds.add(String(row.id));
+        if (row.name) selectedNames.set(String(row.id), String(row.name));
+      }
+    } catch (_) {}
+  }
+
+  function saveSelected() {
+    try {
+      sessionStorage.setItem(
+        SELECTED_KEY,
+        JSON.stringify([...selectedIds].map(id => ({
+          id,
+          name: selectedNames.get(id) || ''
+        })))
+      );
+    } catch (_) {}
+  }
+
+  loadSelected();
 
   const W = window;
   const API = 'https://api.zeta-ai.io';
@@ -179,9 +207,23 @@
     }
   }
 
+  function syncCheckedDomIntoSelection() {
+    // 화면상 체크돼 있는 것부터 다시 읽어서 내부 선택 상태를 복구한다.
+    document.querySelectorAll('.zbd-check:checked').forEach(input => {
+      const item = input.closest(ITEM);
+      const id = input.dataset.plotId || plotId(item);
+      if (!id) return;
+      selectedIds.add(id);
+      if (!selectedNames.has(id)) selectedNames.set(id, plotName(item));
+    });
+    saveSelected();
+  }
+
   function selectedTargets() {
-    // API 삭제는 DOM이 필요 없다.
-    // 가상 스크롤로 화면 밖 카드가 DOM에서 사라져도 선택한 ID 전체를 그대로 처리한다.
+    syncCheckedDomIntoSelection();
+
+    // 가상 스크롤로 화면 밖 카드가 DOM에서 사라져도
+    // sessionStorage에 남아 있는 선택 ID 전체를 그대로 처리한다.
     return [...selectedIds].map(id => ({
       id,
       name: selectedNames.get(id) || id
@@ -189,6 +231,11 @@
   }
 
   function updateToolbar() {
+    // 혹시 페이지가 DOM 체크 상태만 복원한 경우도 즉시 내부 상태에 반영.
+    document.querySelectorAll('.zbd-check:checked').forEach(input => {
+      const id = input.dataset.plotId;
+      if (id) selectedIds.add(id);
+    });
     const count = selectedIds.size;
     const remove = document.querySelector('.zbd-delete-btn');
     const clear = document.querySelector('.zbd-clear-btn');
@@ -215,6 +262,7 @@
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'zbd-check';
+    checkbox.dataset.plotId = id;
     checkbox.checked = selectedIds.has(id);
 
     for (const type of ['click', 'mousedown', 'pointerdown']) {
@@ -230,6 +278,7 @@
         selectedIds.delete(id);
         selectedNames.delete(id);
       }
+      saveSelected();
       updateToolbar();
     });
 
@@ -251,6 +300,7 @@
       if (deleting) return;
       selectedIds.clear();
       selectedNames.clear();
+      saveSelected();
       document.querySelectorAll('.zbd-check:checked').forEach(input => {
         input.checked = false;
       });
@@ -349,6 +399,7 @@
         if (result.id) {
           selectedIds.delete(result.id);
           selectedNames.delete(result.id);
+          saveSelected();
         }
         success += 1;
         await sleep(350);
