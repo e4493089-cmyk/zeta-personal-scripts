@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 일괄 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.1.0
+// @version      0.1.1
 // @description  크리에이터 센터의 삭제 버튼에서 여러 플롯을 체크해 한 번에 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -72,12 +72,22 @@
     return '';
   }
 
+  function storageValue(keys) {
+    for (const storage of [localStorage, sessionStorage]) {
+      for (const key of keys) {
+        try {
+          const value = String(storage.getItem(key) || '').trim().replace(/^"|"$/g, '');
+          if (value) return value;
+        } catch (_) {}
+      }
+    }
+    return '';
+  }
+
   function headers(extra = {}) {
     const accessToken = token();
-    if (!accessToken) throw new Error('제타 로그인 정보를 찾지 못했습니다.');
     const result = {
       Accept: 'application/json',
-      Authorization: 'Bearer ' + accessToken,
       'X-Client-Version': VERSION,
       'X-Client-Native-Version': VERSION,
       'X-Client-Type': 'web',
@@ -85,7 +95,10 @@
       'X-User-Language': 'KOREAN',
       ...extra
     };
-    const sticky = cookie('DEVICE_ID');
+    // TOKEN이 HttpOnly 등으로 document.cookie에서 안 보여도
+    // credentials:'include'가 제타 로그인 세션 쿠키를 API 요청에 함께 보낸다.
+    if (accessToken) result.Authorization = 'Bearer ' + accessToken;
+    const sticky = cookie('DEVICE_ID') || storageValue(['DEVICE_ID', 'deviceId', 'device_id']);
     if (sticky) result['X-Sticky'] = sticky;
     return result;
   }
@@ -97,7 +110,10 @@
       try { data = JSON.parse(text); } catch (_) {}
     }
     if (!response.ok) {
-      const error = new Error(data?.message || data?.error || `요청 실패 (${response.status})`);
+      const authMessage = (response.status === 401 || response.status === 403)
+        ? '제타 로그인 세션을 확인하지 못했어요. 제타 페이지를 새로고침한 뒤 다시 시도해 주세요.'
+        : '';
+      const error = new Error(authMessage || data?.message || data?.error || `요청 실패 (${response.status})`);
       error.status = response.status;
       error.code = data?.code;
       throw error;
@@ -295,10 +311,6 @@
 
   async function loadPlots(force = false) {
     if (state.loaded && !force) return;
-    if (!token()) {
-      setMessage('로그인 정보를 찾지 못했어요. 제타에 로그인한 뒤 새로고침해 주세요.', 'zbd-error');
-      return;
-    }
     state.loading = true;
     state.result = null;
     setMessage('');
