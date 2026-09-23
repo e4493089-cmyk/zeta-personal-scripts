@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.4.0
-// @description  크리에이터 센터에 체크박스를 붙이고 선택한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
+// @version      0.5.0
+// @description  크리에이터 센터에서 체크한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
 // @downloadURL  https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -18,10 +18,7 @@
 
   const ITEM = '[data-sentry-component="CreatorCenterMyPlotListItem"]';
   const HEADER = '[data-sentry-component="CreatorCenterMyPlotListHeader"]';
-  const selected = new Set();
   let deleting = false;
-  let autoConfirmArmed = false;
-  let autoConfirmBusy = false;
 
   const style = document.createElement('style');
   style.textContent = `
@@ -32,13 +29,11 @@
     .zbd-delete-btn,.zbd-clear-btn{border:0;border-radius:9px;padding:7px 10px;font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;white-space:nowrap}
     .zbd-delete-btn{background:#f05252;color:#fff}.zbd-delete-btn:disabled{background:#3a3a3d;color:#8d8d91;cursor:not-allowed}
     .zbd-clear-btn{background:rgba(255,255,255,.08);color:inherit}.zbd-clear-btn:disabled{opacity:.4;cursor:not-allowed}
-    .zbd-status{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:2147483647;padding:10px 14px;border-radius:10px;background:#1f1f21;color:#fff;font:600 13px/1.35 system-ui,sans-serif;box-shadow:0 5px 24px rgba(0,0,0,.38)}
+    .zbd-status{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:2147483647;max-width:min(90vw,560px);padding:10px 14px;border-radius:10px;background:#1f1f21;color:#fff;font:600 13px/1.35 system-ui,sans-serif;box-shadow:0 5px 24px rgba(0,0,0,.38);text-align:center}
   `;
   document.documentElement.appendChild(style);
 
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   function textOf(el) {
     return String(el?.textContent || '').replace(/\s+/g, ' ').trim();
@@ -46,23 +41,24 @@
 
   function visible(el) {
     if (!el || !el.isConnected) return false;
-    const s = getComputedStyle(el);
-    if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return false;
-    const r = el.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
   function plotId(item) {
-    const direct = item.getAttribute('data-plot-id');
-    if (direct) return direct;
-    const link = item.querySelector('a[href*="/plots/"]');
+    const link = item?.querySelector('a[href*="/plots/"]');
     const href = link?.href || '';
-    const match = href.match(/\/plots\/([0-9a-f-]{20,})/i);
-    return match?.[1] || href || '';
+    return href.match(/\/plots\/([0-9a-f-]{20,})/i)?.[1] || '';
   }
 
-  function findItem(id) {
-    return Array.from(document.querySelectorAll(ITEM)).find(item => plotId(item) === id) || null;
+  function plotName(item) {
+    return textOf(
+      item?.querySelector('[data-zrm-original-title]')
+      || item?.querySelector('.line-clamp-1')
+      || item?.querySelector('img')
+    ) || item?.querySelector('img')?.alt || plotId(item) || '플롯';
   }
 
   function setStatus(message, timeout = 0) {
@@ -77,25 +73,36 @@
       document.body.appendChild(box);
     }
     box.textContent = message;
-    if (timeout) setTimeout(() => { if (box?.textContent === message) box.remove(); }, timeout);
+    if (timeout) {
+      setTimeout(() => {
+        if (box?.textContent === message) box.remove();
+      }, timeout);
+    }
+  }
+
+  function checkedItems() {
+    return Array.from(document.querySelectorAll('.zbd-check:checked'))
+      .map(input => input.closest(ITEM))
+      .filter(Boolean);
   }
 
   function updateToolbar() {
-    const button = document.querySelector('.zbd-delete-btn');
+    const count = document.querySelectorAll('.zbd-check:checked').length;
+    const remove = document.querySelector('.zbd-delete-btn');
     const clear = document.querySelector('.zbd-clear-btn');
-    if (button) {
-      button.textContent = selected.size ? `${selected.size}개 선택 삭제` : '선택 삭제';
-      button.disabled = deleting || selected.size === 0;
+
+    if (remove) {
+      remove.textContent = count ? `${count}개 선택 삭제` : '선택 삭제';
+      remove.disabled = deleting || count === 0;
     }
-    if (clear) clear.disabled = deleting || selected.size === 0;
+    if (clear) clear.disabled = deleting || count === 0;
   }
 
   function injectItem(item) {
     if (item.querySelector(':scope > .zbd-check-wrap')) return;
-    const id = plotId(item);
-    if (!id) return;
 
     item.classList.add('zbd-item');
+
     const wrap = document.createElement('label');
     wrap.className = 'zbd-check-wrap';
     wrap.title = '삭제할 플롯 선택';
@@ -103,18 +110,13 @@
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'zbd-check';
-    checkbox.checked = selected.has(id);
-    checkbox.disabled = deleting;
 
-    const stop = event => event.stopPropagation();
-    wrap.addEventListener('click', stop);
-    wrap.addEventListener('mousedown', stop);
-    wrap.addEventListener('pointerdown', stop);
+    for (const type of ['click', 'mousedown', 'pointerdown']) {
+      wrap.addEventListener(type, event => event.stopPropagation());
+    }
 
     checkbox.addEventListener('change', event => {
       event.stopPropagation();
-      if (checkbox.checked) selected.add(id);
-      else selected.delete(id);
       updateToolbar();
     });
 
@@ -135,8 +137,9 @@
     clear.textContent = '선택 해제';
     clear.addEventListener('click', () => {
       if (deleting) return;
-      selected.clear();
-      document.querySelectorAll('.zbd-check').forEach(input => { input.checked = false; });
+      document.querySelectorAll('.zbd-check:checked').forEach(input => {
+        input.checked = false;
+      });
       updateToolbar();
     });
 
@@ -157,124 +160,56 @@
   function refresh() {
     injectToolbar();
     document.querySelectorAll(ITEM).forEach(injectItem);
-    document.querySelectorAll('.zbd-check').forEach(input => { input.disabled = deleting; });
+    document.querySelectorAll('.zbd-check').forEach(input => {
+      input.disabled = deleting;
+    });
+    updateToolbar();
   }
 
   function menuButton(item) {
-    const buttons = Array.from(item.querySelectorAll('button')).filter(button =>
-      visible(button) && !button.closest('.zbd-check-wrap') && !button.classList.contains('zbd-delete-btn')
-    );
+    // 실제 카드 DOM의 오른쪽 마지막 버튼이 점 3개 메뉴 버튼이다.
+    const buttons = Array.from(item.querySelectorAll('button'))
+      .filter(button => !button.closest('.zbd-check-wrap'));
 
-    const named = buttons.find(button =>
-      /더보기|메뉴|more|option|설정/i.test(
-        [button.getAttribute('aria-label'), button.getAttribute('title'), textOf(button)].filter(Boolean).join(' ')
-      )
-    );
-    if (named) return named;
-
-    const svgOnly = buttons.filter(button => !textOf(button) && button.querySelector('svg'));
-    return svgOnly.at(-1) || buttons.at(-1) || null;
+    return buttons.at(-1) || null;
   }
 
-  function findDeleteAction() {
-    // Creator Center 점 3개 메뉴의 실제 삭제 버튼은 id="delete".
-    const nativeDelete = Array.from(document.querySelectorAll('#portal-container button#delete, button#delete'))
-      .find(button => visible(button));
-    if (nativeDelete) return nativeDelete;
+  function findMenuDeleteButton() {
+    // 드롭다운 안에서 현재 보이는 "삭제" 버튼만 찾는다.
+    const buttons = Array.from(document.querySelectorAll('button,[role="button"],[role="menuitem"]'))
+      .filter(el =>
+        visible(el)
+        && !el.closest('.zbd-toolbar')
+        && !el.closest('.zbd-check-wrap')
+        && textOf(el) === '삭제'
+      );
 
-    const candidates = Array.from(document.querySelectorAll('button,[role="menuitem"],[role="button"]'))
-      .filter(el => visible(el) && !el.closest('.zbd-toolbar') && !el.closest('.zbd-check-wrap'));
-
-    return candidates.find(el => textOf(el) === '삭제')
-      || candidates.find(el => /^(플롯\s*)?삭제$/.test(textOf(el)))
-      || candidates.find(el => /삭제/.test(textOf(el)));
+    // 확인 팝업의 삭제 버튼은 여기서 제외.
+    return buttons.find(button => !button.closest('[data-sentry-component="Popup"]')) || null;
   }
 
-  function findPermanentDeletePopup() {
+  function permanentDeletePopup() {
     return Array.from(document.querySelectorAll('[data-sentry-component="Popup"]'))
-      .reverse()
       .find(popup => {
-        const title = textOf(popup.querySelector('h1,h2,h3,h4,h5,h6'));
+        const title = textOf(popup.querySelector('h5,h4,h3,h2,h1,h6'));
         const body = textOf(popup.querySelector('p'));
         return title === '플롯을 영구 삭제하시겠어요?'
           && body === '삭제된 플롯과 플롯 정보는 복구할 수 없어요';
       }) || null;
   }
 
-  function popupDeleteButton(popup) {
+  function popupDeleteButton() {
+    const popup = permanentDeletePopup();
     if (!popup) return null;
+
     const buttons = Array.from(popup.querySelectorAll('button'));
-    // 실제 DOM: [0] 취소, [1] 삭제
     if (buttons.length >= 2 && textOf(buttons[0]) === '취소' && textOf(buttons[1]) === '삭제') {
       return buttons[1];
     }
     return buttons.find(button => textOf(button) === '삭제') || null;
   }
 
-  function invokeReactClick(button) {
-    if (!button) return false;
-    try {
-      const propsKey = Object.keys(button).find(key => key.startsWith('__reactProps$'));
-      const props = propsKey && button[propsKey];
-      if (props && typeof props.onClick === 'function') {
-        props.onClick({
-          type: 'click',
-          target: button,
-          currentTarget: button,
-          nativeEvent: {},
-          preventDefault() {},
-          stopPropagation() {},
-          isDefaultPrevented: () => false,
-          isPropagationStopped: () => false
-        });
-        return true;
-      }
-    } catch (_) {}
-    return false;
-  }
-
-  async function forceConfirmPopup() {
-    if (!autoConfirmArmed || autoConfirmBusy) return false;
-    const popup = findPermanentDeletePopup();
-    const button = popupDeleteButton(popup);
-    if (!button) return false;
-
-    autoConfirmBusy = true;
-    try {
-      button.focus({ preventScroll: true });
-
-      // 1차: 브라우저 기본 클릭
-      try { HTMLButtonElement.prototype.click.call(button); }
-      catch (_) { try { button.click(); } catch (_) {} }
-
-      await sleep(180);
-      if (!findPermanentDeletePopup()) return true;
-
-      // 2차: React가 synthetic click을 무시한 경우 실제 onClick closure 직접 호출
-      invokeReactClick(button);
-
-      await sleep(180);
-      if (!findPermanentDeletePopup()) return true;
-
-      // 3차: 마지막 일반 click
-      try { button.click(); } catch (_) {}
-      return true;
-    } finally {
-      autoConfirmBusy = false;
-    }
-  }
-
-  // 삭제 작업 중에는 팝업이 생기는 순간 계속 확인 버튼을 누른다.
-  const popupObserver = new MutationObserver(() => {
-    if (autoConfirmArmed) void forceConfirmPopup();
-  });
-  popupObserver.observe(document.body, { childList: true, subtree: true });
-
-  const popupPoller = setInterval(() => {
-    if (autoConfirmArmed) void forceConfirmPopup();
-  }, 120);
-
-  async function waitFor(fn, timeout = 2500, interval = 60) {
+  async function waitFor(fn, timeout = 3000, interval = 50) {
     const end = Date.now() + timeout;
     while (Date.now() < end) {
       const value = fn();
@@ -284,92 +219,97 @@
     return null;
   }
 
-  async function deleteOne(id) {
-    const item = findItem(id);
-    if (!item) return { ok: false, reason: '화면에서 플롯 카드를 찾지 못함' };
+  async function deleteOne(item, index, total) {
+    const id = plotId(item);
+    const name = plotName(item);
+
+    if (!item?.isConnected) {
+      return { ok: false, reason: `${name}: 선택한 카드가 DOM에서 사라짐` };
+    }
 
     const menu = menuButton(item);
-    if (!menu) return { ok: false, reason: '플롯 메뉴 버튼을 찾지 못함' };
+    if (!menu) {
+      return { ok: false, reason: `${name}: 점 3개 버튼을 못 찾음` };
+    }
 
+    setStatus(`${index}/${total} · ${name} · 점 3개 여는 중`);
     menu.click();
 
-    const action = await waitFor(findDeleteAction, 2500, 50);
-    if (!action) {
-      document.body.click();
-      return { ok: false, reason: '삭제 메뉴를 찾지 못함' };
+    const menuDelete = await waitFor(findMenuDeleteButton, 3000, 50);
+    if (!menuDelete) {
+      return { ok: false, reason: `${name}: 메뉴의 삭제 버튼을 못 찾음` };
     }
 
-    // 이 시점부터 확인 팝업 전역 자동 클릭을 무장한다.
-    autoConfirmArmed = true;
-    action.click();
+    setStatus(`${index}/${total} · ${name} · 삭제 팝업 여는 중`);
+    menuDelete.click();
 
-    // 팝업이 뜨면 observer/poller가 실제 '삭제' 버튼을 자동으로 누른다.
-    // 혹시 observer 타이밍을 놓쳐도 즉시 한 번 직접 확인한다.
-    await sleep(50);
-    void forceConfirmPopup();
-
-    const removed = await waitFor(() => !findItem(id), 8000, 100);
-    autoConfirmArmed = false;
-
-    if (!removed) {
-      return { ok: false, reason: '삭제 팝업의 확인 버튼 자동 클릭 후에도 플롯이 삭제되지 않음' };
+    const confirm = await waitFor(popupDeleteButton, 3000, 50);
+    if (!confirm) {
+      return { ok: false, reason: `${name}: 영구 삭제 확인 팝업을 못 찾음` };
     }
 
-    return { ok: true };
+    setStatus(`${index}/${total} · ${name} · 확인 누르는 중`);
+    confirm.click();
+
+    const gone = await waitFor(() => {
+      if (!id) return !item.isConnected;
+      return !Array.from(document.querySelectorAll(ITEM)).some(candidate => plotId(candidate) === id);
+    }, 8000, 100);
+
+    if (!gone) {
+      return { ok: false, reason: `${name}: 확인을 눌렀지만 카드가 사라지지 않음` };
+    }
+
+    return { ok: true, name };
   }
 
   async function startDelete() {
-    if (deleting || !selected.size) return;
+    if (deleting) return;
 
-    const count = selected.size;
+    // 중요: 저장해 둔 ID가 아니라 지금 실제로 체크된 DOM을 그 순간 다시 읽는다.
+    const targets = checkedItems();
+    if (!targets.length) {
+      setStatus('체크된 플롯을 찾지 못했어요.', 4000);
+      return;
+    }
 
     deleting = true;
-    autoConfirmArmed = false;
     refresh();
-    updateToolbar();
 
-    const ids = [...selected];
-    const failures = [];
+    let success = 0;
+    let failure = null;
 
-    for (let i = 0; i < ids.length; i += 1) {
-      const id = ids[i];
-      setStatus(`${i + 1} / ${ids.length} 삭제 중…`);
-
+    for (let i = 0; i < targets.length; i += 1) {
       try {
-        const result = await deleteOne(id);
-        if (result.ok) {
-          selected.delete(id);
-        } else {
-          failures.push({ id, reason: result.reason });
-          // 삭제가 실제로 완료되지 않았으면 다음 플롯으로 건너뛰지 않는다.
+        const result = await deleteOne(targets[i], i + 1, targets.length);
+        if (!result.ok) {
+          failure = result.reason;
           break;
         }
+        success += 1;
+        await sleep(350);
       } catch (error) {
-        failures.push({ id, reason: error?.message || '알 수 없는 오류' });
+        failure = `예외: ${error?.message || String(error)}`;
+        console.error('[Zeta 선택 삭제]', error);
+        break;
       }
-
-      await sleep(250);
-      refresh();
     }
 
     deleting = false;
-    autoConfirmArmed = false;
     refresh();
-    updateToolbar();
 
-    if (failures.length) {
-      setStatus(`${ids.length - failures.length}개 삭제 완료 · ${failures.length}개 실패`, 5000);
-      console.warn('[Zeta 선택 삭제] 실패 항목', failures);
+    if (failure) {
+      setStatus(`${success}개 삭제 완료 · 실패: ${failure}`, 10000);
     } else {
-      setStatus(`${ids.length}개 삭제 완료`, 3000);
+      setStatus(`${success}개 삭제 완료`, 4000);
     }
   }
 
   refresh();
 
-  let timer = 0;
+  let refreshTimer = 0;
   new MutationObserver(() => {
-    clearTimeout(timer);
-    timer = setTimeout(refresh, 80);
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(refresh, 80);
   }).observe(document.body, { childList: true, subtree: true });
 })();
