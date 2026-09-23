@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.2.0
+// @version      0.2.1
 // @description  크리에이터 센터에 체크박스를 붙이고 선택한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -175,8 +175,12 @@
   }
 
   function findDeleteAction() {
+    // Creator Center 점 3개 메뉴의 실제 삭제 버튼.
+    const nativeDelete = document.querySelector('#portal-container button#delete, button#delete');
+    if (nativeDelete) return nativeDelete;
+
     const candidates = Array.from(document.querySelectorAll('button,[role="menuitem"],[role="button"]'))
-      .filter(el => visible(el) && !el.closest('.zbd-toolbar') && !el.closest('.zbd-check-wrap'));
+      .filter(el => !el.closest('.zbd-toolbar') && !el.closest('.zbd-check-wrap'));
 
     return candidates.find(el => textOf(el) === '삭제')
       || candidates.find(el => /^(플롯\s*)?삭제$/.test(textOf(el)))
@@ -184,18 +188,26 @@
   }
 
   function findConfirmDelete() {
-    const dialogs = Array.from(document.querySelectorAll(
-      '[role="dialog"],[role="alertdialog"],[data-sentry-component*="Modal"],[data-sentry-component*="Dialog"],[data-sentry-source-file*="Modal"],[data-sentry-source-file*="Dialog"]'
-    )).filter(visible);
+    // 제타 확인 팝업: "삭제 하시겠어요?" / "삭제된 내용은 되돌릴 수 없어요"
+    // '취소'와 '삭제'가 함께 있는 팝업 안의 삭제 버튼을 찾는다.
+    const deleteButtons = Array.from(document.querySelectorAll('button,[role="button"]'))
+      .filter(button =>
+        button.id !== 'delete' &&
+        !button.closest('.zbd-toolbar') &&
+        !button.closest('.zbd-check-wrap') &&
+        textOf(button) === '삭제'
+      );
 
-    for (const dialog of dialogs.reverse()) {
-      if (!/삭제/.test(textOf(dialog))) continue;
-      const buttons = Array.from(dialog.querySelectorAll('button,[role="button"]')).filter(visible);
-      const exact = buttons.find(button => textOf(button) === '삭제');
-      if (exact) return exact;
-      const danger = buttons.find(button => /삭제|확인/.test(textOf(button)) && !/취소/.test(textOf(button)));
-      if (danger) return danger;
+    for (const button of deleteButtons.reverse()) {
+      let node = button.parentElement;
+      for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
+        const buttons = Array.from(node.querySelectorAll('button,[role="button"]'));
+        if (!buttons.some(candidate => textOf(candidate) === '취소')) continue;
+        const text = textOf(node);
+        if (/삭제\s*하시겠어요|되돌릴 수 없어요|삭제/.test(text)) return button;
+      }
     }
+
     return null;
   }
 
@@ -226,12 +238,14 @@
 
     action.click();
 
-    const confirm = await waitFor(findConfirmDelete, 1800);
-    if (confirm) {
-      confirm.click();
+    // 메뉴의 삭제 클릭 → 확인 팝업의 삭제까지 자동 클릭.
+    const confirm = await waitFor(findConfirmDelete, 3000, 50);
+    if (!confirm) {
+      return { ok: false, reason: '삭제 확인 버튼을 찾지 못함' };
     }
+    confirm.click();
 
-    const removed = await waitFor(() => !findItem(id), 4000, 100);
+    const removed = await waitFor(() => !findItem(id), 5000, 100);
     if (!removed) {
       // 삭제 후 목록 갱신이 늦는 경우도 있어서 한 번 더 기다린다.
       await sleep(700);
