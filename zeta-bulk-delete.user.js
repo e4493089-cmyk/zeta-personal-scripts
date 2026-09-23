@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.3.1
+// @version      0.4.0
 // @description  크리에이터 센터에 체크박스를 붙이고 선택한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -20,6 +20,8 @@
   const HEADER = '[data-sentry-component="CreatorCenterMyPlotListHeader"]';
   const selected = new Set();
   let deleting = false;
+  let autoConfirmArmed = false;
+  let autoConfirmBusy = false;
 
   const style = document.createElement('style');
   style.textContent = `
@@ -188,64 +190,89 @@
       || candidates.find(el => /삭제/.test(textOf(el)));
   }
 
-  function findPopupDeleteButton() {
-    // 실제 Creator Center 삭제 확인 팝업:
-    // data-sentry-component="Popup"
-    // 제목: "플롯을 영구 삭제하시겠어요?"
-    // 본문: "삭제된 플롯과 플롯 정보는 복구할 수 없어요"
-    const popups = Array.from(document.querySelectorAll('[data-sentry-component="Popup"]'));
+  function findPermanentDeletePopup() {
+    return Array.from(document.querySelectorAll('[data-sentry-component="Popup"]'))
+      .reverse()
+      .find(popup => {
+        const title = textOf(popup.querySelector('h1,h2,h3,h4,h5,h6'));
+        const body = textOf(popup.querySelector('p'));
+        return title === '플롯을 영구 삭제하시겠어요?'
+          && body === '삭제된 플롯과 플롯 정보는 복구할 수 없어요';
+      }) || null;
+  }
 
-    for (const popup of popups.reverse()) {
-      const title = textOf(popup.querySelector('h1,h2,h3,h4,h5,h6'));
-      const body = textOf(popup.querySelector('p'));
-
-      if (title !== '플롯을 영구 삭제하시겠어요?') continue;
-      if (body !== '삭제된 플롯과 플롯 정보는 복구할 수 없어요') continue;
-
-      const buttons = Array.from(popup.querySelectorAll('button'));
-      const cancel = buttons.find(button => textOf(button) === '취소');
-      const remove = buttons.find(button => textOf(button) === '삭제');
-
-      if (cancel && remove) return remove;
+  function popupDeleteButton(popup) {
+    if (!popup) return null;
+    const buttons = Array.from(popup.querySelectorAll('button'));
+    // 실제 DOM: [0] 취소, [1] 삭제
+    if (buttons.length >= 2 && textOf(buttons[0]) === '취소' && textOf(buttons[1]) === '삭제') {
+      return buttons[1];
     }
-
-    return null;
+    return buttons.find(button => textOf(button) === '삭제') || null;
   }
 
-  function waitAndClickDeletePopup(timeout = 5000) {
-    return new Promise(resolve => {
-      let done = false;
-
-      const finish = result => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        observer.disconnect();
-        resolve(result);
-      };
-
-      const tryClick = () => {
-        const button = findPopupDeleteButton();
-        if (!button) return false;
-
-        // React 버튼도 확실히 먹도록 포인터/마우스 이벤트 후 click.
-        try { button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); } catch (_) {}
-        try { button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch (_) {}
-        try { button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch (_) {}
-        button.click();
-        finish(true);
+  function invokeReactClick(button) {
+    if (!button) return false;
+    try {
+      const propsKey = Object.keys(button).find(key => key.startsWith('__reactProps$'));
+      const props = propsKey && button[propsKey];
+      if (props && typeof props.onClick === 'function') {
+        props.onClick({
+          type: 'click',
+          target: button,
+          currentTarget: button,
+          nativeEvent: {},
+          preventDefault() {},
+          stopPropagation() {},
+          isDefaultPrevented: () => false,
+          isPropagationStopped: () => false
+        });
         return true;
-      };
-
-      const observer = new MutationObserver(tryClick);
-      observer.observe(document.body, { childList: true, subtree: true });
-
-      const timer = setTimeout(() => finish(false), timeout);
-
-      // 팝업이 이미 그려진 직후 observer가 붙는 경우 대비.
-      tryClick();
-    });
+      }
+    } catch (_) {}
+    return false;
   }
+
+  async function forceConfirmPopup() {
+    if (!autoConfirmArmed || autoConfirmBusy) return false;
+    const popup = findPermanentDeletePopup();
+    const button = popupDeleteButton(popup);
+    if (!button) return false;
+
+    autoConfirmBusy = true;
+    try {
+      button.focus({ preventScroll: true });
+
+      // 1차: 브라우저 기본 클릭
+      try { HTMLButtonElement.prototype.click.call(button); }
+      catch (_) { try { button.click(); } catch (_) {} }
+
+      await sleep(180);
+      if (!findPermanentDeletePopup()) return true;
+
+      // 2차: React가 synthetic click을 무시한 경우 실제 onClick closure 직접 호출
+      invokeReactClick(button);
+
+      await sleep(180);
+      if (!findPermanentDeletePopup()) return true;
+
+      // 3차: 마지막 일반 click
+      try { button.click(); } catch (_) {}
+      return true;
+    } finally {
+      autoConfirmBusy = false;
+    }
+  }
+
+  // 삭제 작업 중에는 팝업이 생기는 순간 계속 확인 버튼을 누른다.
+  const popupObserver = new MutationObserver(() => {
+    if (autoConfirmArmed) void forceConfirmPopup();
+  });
+  popupObserver.observe(document.body, { childList: true, subtree: true });
+
+  const popupPoller = setInterval(() => {
+    if (autoConfirmArmed) void forceConfirmPopup();
+  }, 120);
 
   async function waitFor(fn, timeout = 2500, interval = 60) {
     const end = Date.now() + timeout;
@@ -272,19 +299,20 @@
       return { ok: false, reason: '삭제 메뉴를 찾지 못함' };
     }
 
-    // 먼저 팝업 감시를 시작한 뒤 제타 기본 삭제를 누른다.
-    // 팝업이 생성되는 순간 안의 '삭제'를 매크로가 자동 클릭한다.
-    const popupMacro = waitAndClickDeletePopup(5000);
+    // 이 시점부터 확인 팝업 전역 자동 클릭을 무장한다.
+    autoConfirmArmed = true;
     action.click();
 
-    const clicked = await popupMacro;
-    if (!clicked) {
-      return { ok: false, reason: '삭제 확인 팝업을 감지하지 못함' };
-    }
+    // 팝업이 뜨면 observer/poller가 실제 '삭제' 버튼을 자동으로 누른다.
+    // 혹시 observer 타이밍을 놓쳐도 즉시 한 번 직접 확인한다.
+    await sleep(50);
+    void forceConfirmPopup();
 
-    const removed = await waitFor(() => !findItem(id), 7000, 100);
+    const removed = await waitFor(() => !findItem(id), 8000, 100);
+    autoConfirmArmed = false;
+
     if (!removed) {
-      return { ok: false, reason: '확인 클릭 후에도 플롯이 삭제되지 않음' };
+      return { ok: false, reason: '삭제 팝업의 확인 버튼 자동 클릭 후에도 플롯이 삭제되지 않음' };
     }
 
     return { ok: true };
@@ -296,6 +324,7 @@
     const count = selected.size;
 
     deleting = true;
+    autoConfirmArmed = false;
     refresh();
     updateToolbar();
 
@@ -324,6 +353,7 @@
     }
 
     deleting = false;
+    autoConfirmArmed = false;
     refresh();
     updateToolbar();
 
