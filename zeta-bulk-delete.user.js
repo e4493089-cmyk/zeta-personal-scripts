@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.2.2
+// @version      0.3.0
 // @description  크리에이터 센터에 체크박스를 붙이고 선택한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -175,38 +175,76 @@
   }
 
   function findDeleteAction() {
-    // Creator Center 점 3개 메뉴의 실제 삭제 버튼.
-    const nativeDelete = document.querySelector('#portal-container button#delete, button#delete');
+    // Creator Center 점 3개 메뉴의 실제 삭제 버튼은 id="delete".
+    const nativeDelete = Array.from(document.querySelectorAll('#portal-container button#delete, button#delete'))
+      .find(button => visible(button));
     if (nativeDelete) return nativeDelete;
 
     const candidates = Array.from(document.querySelectorAll('button,[role="menuitem"],[role="button"]'))
-      .filter(el => !el.closest('.zbd-toolbar') && !el.closest('.zbd-check-wrap'));
+      .filter(el => visible(el) && !el.closest('.zbd-toolbar') && !el.closest('.zbd-check-wrap'));
 
     return candidates.find(el => textOf(el) === '삭제')
       || candidates.find(el => /^(플롯\s*)?삭제$/.test(textOf(el)))
       || candidates.find(el => /삭제/.test(textOf(el)));
   }
 
-  function findConfirmDelete() {
-    // 제타 삭제 확인 팝업 안의 "삭제" 버튼만 잡는다.
-    const roots = Array.from(document.querySelectorAll(
-      '#portal-container [data-sentry-component="Popup"],' +
-      '#portal-container [role="dialog"],' +
-      '#portal-container [role="alertdialog"],' +
-      '#portal-container > div'
-    )).filter(node => node && node.isConnected);
+  function findPopupDeleteButton() {
+    const buttons = Array.from(document.querySelectorAll('button,[role="button"]'))
+      .filter(button =>
+        button.id !== 'delete' &&
+        !button.closest('.zbd-toolbar') &&
+        !button.closest('.zbd-check-wrap') &&
+        textOf(button) === '삭제'
+      );
 
-    for (const root of roots.reverse()) {
-      const text = textOf(root);
-      if (!/삭제\s*하시겠어요|삭제된 내용은 되돌릴 수 없어요/.test(text)) continue;
+    for (const button of buttons.reverse()) {
+      let node = button.parentElement;
+      for (let depth = 0; node && depth < 14; depth += 1, node = node.parentElement) {
+        const text = textOf(node);
+        if (!text.includes('삭제 하시겠어요?')) continue;
+        if (!text.includes('삭제된 내용은 되돌릴 수 없어요')) continue;
 
-      const buttons = Array.from(root.querySelectorAll('button,[role="button"]'));
-      const confirm = buttons.find(button => textOf(button) === '삭제');
-      const cancel = buttons.find(button => textOf(button) === '취소');
-      if (confirm && cancel) return confirm;
+        const controls = Array.from(node.querySelectorAll('button,[role="button"]'));
+        if (!controls.some(candidate => textOf(candidate) === '취소')) continue;
+        return button;
+      }
     }
-
     return null;
+  }
+
+  function waitAndClickDeletePopup(timeout = 5000) {
+    return new Promise(resolve => {
+      let done = false;
+
+      const finish = result => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        observer.disconnect();
+        resolve(result);
+      };
+
+      const tryClick = () => {
+        const button = findPopupDeleteButton();
+        if (!button) return false;
+
+        // React 버튼도 확실히 먹도록 포인터/마우스 이벤트 후 click.
+        try { button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); } catch (_) {}
+        try { button.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); } catch (_) {}
+        try { button.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })); } catch (_) {}
+        button.click();
+        finish(true);
+        return true;
+      };
+
+      const observer = new MutationObserver(tryClick);
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      const timer = setTimeout(() => finish(false), timeout);
+
+      // 팝업이 이미 그려진 직후 observer가 붙는 경우 대비.
+      tryClick();
+    });
   }
 
   async function waitFor(fn, timeout = 2500, interval = 60) {
@@ -228,36 +266,25 @@
 
     menu.click();
 
-    const action = await waitFor(findDeleteAction);
+    const action = await waitFor(findDeleteAction, 2500, 50);
     if (!action) {
       document.body.click();
       return { ok: false, reason: '삭제 메뉴를 찾지 못함' };
     }
 
+    // 먼저 팝업 감시를 시작한 뒤 제타 기본 삭제를 누른다.
+    // 팝업이 생성되는 순간 안의 '삭제'를 매크로가 자동 클릭한다.
+    const popupMacro = waitAndClickDeletePopup(5000);
     action.click();
 
-    // 메뉴의 삭제 클릭 → 확인 팝업의 삭제까지 자동 클릭.
-    const confirm = await waitFor(findConfirmDelete, 3000, 50);
-    if (!confirm) {
-      return { ok: false, reason: '삭제 확인 버튼을 찾지 못함' };
+    const clicked = await popupMacro;
+    if (!clicked) {
+      return { ok: false, reason: '삭제 확인 팝업을 감지하지 못함' };
     }
 
-    confirm.click();
-
-    // 실제로 삭제가 완료되어 카드가 사라질 때까지 절대 다음 항목으로 넘어가지 않는다.
-    let removed = await waitFor(() => !findItem(id), 5000, 100);
-
-    // 첫 클릭이 씹힌 경우 확인창이 아직 남아 있으면 한 번만 재시도.
+    const removed = await waitFor(() => !findItem(id), 7000, 100);
     if (!removed) {
-      const retryConfirm = findConfirmDelete();
-      if (retryConfirm) {
-        retryConfirm.click();
-        removed = await waitFor(() => !findItem(id), 5000, 100);
-      }
-    }
-
-    if (!removed) {
-      return { ok: false, reason: '삭제 확인을 눌렀지만 플롯이 삭제되지 않음' };
+      return { ok: false, reason: '확인 클릭 후에도 플롯이 삭제되지 않음' };
     }
 
     return { ok: true };
@@ -267,7 +294,6 @@
     if (deleting || !selected.size) return;
 
     const count = selected.size;
-    if (!window.confirm(`선택한 ${count}개 플롯을 삭제할까요?\n제타의 기본 삭제 기능을 순서대로 실행합니다.`)) return;
 
     deleting = true;
     refresh();
