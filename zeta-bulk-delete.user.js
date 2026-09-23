@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.2.1
+// @version      0.2.2
 // @description  크리에이터 센터에 체크박스를 붙이고 선택한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -188,24 +188,22 @@
   }
 
   function findConfirmDelete() {
-    // 제타 확인 팝업: "삭제 하시겠어요?" / "삭제된 내용은 되돌릴 수 없어요"
-    // '취소'와 '삭제'가 함께 있는 팝업 안의 삭제 버튼을 찾는다.
-    const deleteButtons = Array.from(document.querySelectorAll('button,[role="button"]'))
-      .filter(button =>
-        button.id !== 'delete' &&
-        !button.closest('.zbd-toolbar') &&
-        !button.closest('.zbd-check-wrap') &&
-        textOf(button) === '삭제'
-      );
+    // 제타 삭제 확인 팝업 안의 "삭제" 버튼만 잡는다.
+    const roots = Array.from(document.querySelectorAll(
+      '#portal-container [data-sentry-component="Popup"],' +
+      '#portal-container [role="dialog"],' +
+      '#portal-container [role="alertdialog"],' +
+      '#portal-container > div'
+    )).filter(node => node && node.isConnected);
 
-    for (const button of deleteButtons.reverse()) {
-      let node = button.parentElement;
-      for (let depth = 0; node && depth < 10; depth += 1, node = node.parentElement) {
-        const buttons = Array.from(node.querySelectorAll('button,[role="button"]'));
-        if (!buttons.some(candidate => textOf(candidate) === '취소')) continue;
-        const text = textOf(node);
-        if (/삭제\s*하시겠어요|되돌릴 수 없어요|삭제/.test(text)) return button;
-      }
+    for (const root of roots.reverse()) {
+      const text = textOf(root);
+      if (!/삭제\s*하시겠어요|삭제된 내용은 되돌릴 수 없어요/.test(text)) continue;
+
+      const buttons = Array.from(root.querySelectorAll('button,[role="button"]'));
+      const confirm = buttons.find(button => textOf(button) === '삭제');
+      const cancel = buttons.find(button => textOf(button) === '취소');
+      if (confirm && cancel) return confirm;
     }
 
     return null;
@@ -243,13 +241,25 @@
     if (!confirm) {
       return { ok: false, reason: '삭제 확인 버튼을 찾지 못함' };
     }
+
     confirm.click();
 
-    const removed = await waitFor(() => !findItem(id), 5000, 100);
+    // 실제로 삭제가 완료되어 카드가 사라질 때까지 절대 다음 항목으로 넘어가지 않는다.
+    let removed = await waitFor(() => !findItem(id), 5000, 100);
+
+    // 첫 클릭이 씹힌 경우 확인창이 아직 남아 있으면 한 번만 재시도.
     if (!removed) {
-      // 삭제 후 목록 갱신이 늦는 경우도 있어서 한 번 더 기다린다.
-      await sleep(700);
+      const retryConfirm = findConfirmDelete();
+      if (retryConfirm) {
+        retryConfirm.click();
+        removed = await waitFor(() => !findItem(id), 5000, 100);
+      }
     }
+
+    if (!removed) {
+      return { ok: false, reason: '삭제 확인을 눌렀지만 플롯이 삭제되지 않음' };
+    }
+
     return { ok: true };
   }
 
@@ -272,8 +282,13 @@
 
       try {
         const result = await deleteOne(id);
-        if (result.ok) selected.delete(id);
-        else failures.push({ id, reason: result.reason });
+        if (result.ok) {
+          selected.delete(id);
+        } else {
+          failures.push({ id, reason: result.reason });
+          // 삭제가 실제로 완료되지 않았으면 다음 플롯으로 건너뛰지 않는다.
+          break;
+        }
       } catch (error) {
         failures.push({ id, reason: error?.message || '알 수 없는 오류' });
       }
