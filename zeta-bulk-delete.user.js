@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.5.0
+// @version      0.5.1
 // @description  크리에이터 센터에서 체크한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -19,14 +19,15 @@
   const ITEM = '[data-sentry-component="CreatorCenterMyPlotListItem"]';
   const HEADER = '[data-sentry-component="CreatorCenterMyPlotListHeader"]';
   let deleting = false;
+  const selectedIds = new Set();
 
   const style = document.createElement('style');
   style.textContent = `
     .zbd-item{position:relative!important}
     .zbd-check-wrap{position:absolute;left:8px;top:8px;z-index:20;display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:rgba(20,20,20,.82);box-shadow:0 1px 5px rgba(0,0,0,.25)}
     .zbd-check{width:18px;height:18px;margin:0;accent-color:#fee500;cursor:pointer}
-    .zbd-toolbar{display:flex;align-items:center;gap:8px;margin-left:auto;padding-left:10px}
-    .zbd-delete-btn,.zbd-clear-btn{border:0;border-radius:9px;padding:7px 10px;font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+    .zbd-toolbar{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(18px,calc(env(safe-area-inset-bottom) + 12px));z-index:2147483600;display:flex;align-items:center;gap:8px;padding:8px;border:1px solid rgba(255,255,255,.10);border-radius:14px;background:rgba(28,28,31,.94);box-shadow:0 8px 30px rgba(0,0,0,.38);backdrop-filter:blur(10px)}
+    .zbd-delete-btn,.zbd-clear-btn{border:0;border-radius:9px;padding:9px 12px;font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;white-space:nowrap}
     .zbd-delete-btn{background:#f05252;color:#fff}.zbd-delete-btn:disabled{background:#3a3a3d;color:#8d8d91;cursor:not-allowed}
     .zbd-clear-btn{background:rgba(255,255,255,.08);color:inherit}.zbd-clear-btn:disabled{opacity:.4;cursor:not-allowed}
     .zbd-status{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:2147483647;max-width:min(90vw,560px);padding:10px 14px;border-radius:10px;background:#1f1f21;color:#fff;font:600 13px/1.35 system-ui,sans-serif;box-shadow:0 5px 24px rgba(0,0,0,.38);text-align:center}
@@ -81,13 +82,14 @@
   }
 
   function checkedItems() {
-    return Array.from(document.querySelectorAll('.zbd-check:checked'))
-      .map(input => input.closest(ITEM))
+    // 선택 상태는 플롯 ID로 유지하고, 실행 시점의 최신 DOM 카드를 다시 찾는다.
+    return [...selectedIds]
+      .map(id => Array.from(document.querySelectorAll(ITEM)).find(item => plotId(item) === id))
       .filter(Boolean);
   }
 
   function updateToolbar() {
-    const count = document.querySelectorAll('.zbd-check:checked').length;
+    const count = selectedIds.size;
     const remove = document.querySelector('.zbd-delete-btn');
     const clear = document.querySelector('.zbd-clear-btn');
 
@@ -107,9 +109,13 @@
     wrap.className = 'zbd-check-wrap';
     wrap.title = '삭제할 플롯 선택';
 
+    const id = plotId(item);
+    if (!id) return;
+
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.className = 'zbd-check';
+    checkbox.checked = selectedIds.has(id);
 
     for (const type of ['click', 'mousedown', 'pointerdown']) {
       wrap.addEventListener(type, event => event.stopPropagation());
@@ -117,6 +123,8 @@
 
     checkbox.addEventListener('change', event => {
       event.stopPropagation();
+      if (checkbox.checked) selectedIds.add(id);
+      else selectedIds.delete(id);
       updateToolbar();
     });
 
@@ -125,8 +133,7 @@
   }
 
   function injectToolbar() {
-    const header = document.querySelector(HEADER);
-    if (!header || header.querySelector('.zbd-toolbar')) return;
+    if (document.querySelector('.zbd-toolbar')) return;
 
     const toolbar = document.createElement('div');
     toolbar.className = 'zbd-toolbar';
@@ -137,6 +144,7 @@
     clear.textContent = '선택 해제';
     clear.addEventListener('click', () => {
       if (deleting) return;
+      selectedIds.clear();
       document.querySelectorAll('.zbd-check:checked').forEach(input => {
         input.checked = false;
       });
@@ -151,16 +159,18 @@
     remove.addEventListener('click', startDelete);
 
     toolbar.append(clear, remove);
-    header.style.display = 'flex';
-    header.style.alignItems = 'center';
-    header.appendChild(toolbar);
+    document.body.appendChild(toolbar);
     updateToolbar();
   }
 
   function refresh() {
     injectToolbar();
     document.querySelectorAll(ITEM).forEach(injectItem);
-    document.querySelectorAll('.zbd-check').forEach(input => {
+    document.querySelectorAll(ITEM).forEach(item => {
+      const id = plotId(item);
+      const input = item.querySelector(':scope > .zbd-check-wrap .zbd-check');
+      if (!input || !id) return;
+      input.checked = selectedIds.has(id);
       input.disabled = deleting;
     });
     updateToolbar();
@@ -286,6 +296,8 @@
           failure = result.reason;
           break;
         }
+        const deletedId = plotId(targets[i]);
+        if (deletedId) selectedIds.delete(deletedId);
         success += 1;
         await sleep(350);
       } catch (error) {
