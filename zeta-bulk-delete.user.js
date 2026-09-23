@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zeta 플롯 선택 삭제
 // @namespace    zeta-personal-scripts
-// @version      0.3.0
+// @version      0.3.1
 // @description  크리에이터 센터에 체크박스를 붙이고 선택한 플롯을 제타 기본 삭제 UI로 순서대로 삭제합니다.
 // @match        https://zeta-ai.io/*/creator-center*
 // @updateURL    https://raw.githubusercontent.com/e4493089-cmyk/zeta-personal-scripts/main/zeta-bulk-delete.user.js
@@ -189,26 +189,26 @@
   }
 
   function findPopupDeleteButton() {
-    const buttons = Array.from(document.querySelectorAll('button,[role="button"]'))
-      .filter(button =>
-        button.id !== 'delete' &&
-        !button.closest('.zbd-toolbar') &&
-        !button.closest('.zbd-check-wrap') &&
-        textOf(button) === '삭제'
-      );
+    // 실제 Creator Center 삭제 확인 팝업:
+    // data-sentry-component="Popup"
+    // 제목: "플롯을 영구 삭제하시겠어요?"
+    // 본문: "삭제된 플롯과 플롯 정보는 복구할 수 없어요"
+    const popups = Array.from(document.querySelectorAll('[data-sentry-component="Popup"]'));
 
-    for (const button of buttons.reverse()) {
-      let node = button.parentElement;
-      for (let depth = 0; node && depth < 14; depth += 1, node = node.parentElement) {
-        const text = textOf(node);
-        if (!text.includes('삭제 하시겠어요?')) continue;
-        if (!text.includes('삭제된 내용은 되돌릴 수 없어요')) continue;
+    for (const popup of popups.reverse()) {
+      const title = textOf(popup.querySelector('h1,h2,h3,h4,h5,h6'));
+      const body = textOf(popup.querySelector('p'));
 
-        const controls = Array.from(node.querySelectorAll('button,[role="button"]'));
-        if (!controls.some(candidate => textOf(candidate) === '취소')) continue;
-        return button;
-      }
+      if (title !== '플롯을 영구 삭제하시겠어요?') continue;
+      if (body !== '삭제된 플롯과 플롯 정보는 복구할 수 없어요') continue;
+
+      const buttons = Array.from(popup.querySelectorAll('button'));
+      const cancel = buttons.find(button => textOf(button) === '취소');
+      const remove = buttons.find(button => textOf(button) === '삭제');
+
+      if (cancel && remove) return remove;
     }
+
     return null;
   }
 
