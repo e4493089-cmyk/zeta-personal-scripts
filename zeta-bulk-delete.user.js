@@ -152,7 +152,7 @@
     .zbd-item{position:relative!important}
     .zbd-thumb-host{position:relative!important}
     .zbd-check-wrap{position:absolute;left:3px;top:3px;z-index:20;display:block;width:auto;height:auto;margin:0;padding:0;background:transparent;border:0;box-shadow:none}
-    .zbd-check{width:18px;height:18px;margin:0;accent-color:#fee500;cursor:pointer}
+    .zbd-check{width:18px;height:18px;margin:0;accent-color:#fff;cursor:pointer}
     .zbd-toolbar{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(18px,calc(env(safe-area-inset-bottom) + 12px));z-index:2147483600;display:flex;align-items:center;gap:8px;padding:8px;border:1px solid rgba(255,255,255,.10);border-radius:14px;background:rgba(28,28,31,.94);box-shadow:0 8px 30px rgba(0,0,0,.38);backdrop-filter:blur(10px)}
     .zbd-delete-btn,.zbd-clear-btn{border:0;border-radius:9px;padding:9px 12px;font:600 12px/1.2 system-ui,sans-serif;cursor:pointer;white-space:nowrap}
     .zbd-delete-btn{background:#f05252;color:#fff}.zbd-delete-btn:disabled{background:#3a3a3d;color:#8d8d91;cursor:not-allowed}
