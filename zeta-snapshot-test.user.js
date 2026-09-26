@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot Test Prototype
 // @namespace    zeta-snapshot-test
-// @version      0.3.1
+// @version      0.4.0
 // @description  ZETA Snapshot collector/review/send prototype
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -21,6 +21,7 @@
       CHARACTER: 'zetaSnapshot.characterCache.v1',
       USER: 'zetaSnapshot.userCache.v1',
       GLOBAL: 'zetaSnapshot.globalSettings.v1',
+      PLOTS: 'zetaSnapshot.plots.v1',
       CLIENT_ID: 'zetaSnapshot.clientId.v1',
     },
     DEFAULT_INSTRUCTIONS: [
@@ -50,6 +51,7 @@
     overlay: null,
     resultBox: null,
     currentDraft: null,
+    activePlotId: null,
   };
 
   function qs(sel, root = document) { return root.querySelector(sel); }
@@ -73,6 +75,62 @@
     } catch {
       return fallback;
     }
+  }
+
+  function getPlotStore() {
+    return load(CONFIG.STORAGE.PLOTS, {}) || {};
+  }
+
+  function savePlotStore(store) {
+    save(CONFIG.STORAGE.PLOTS, store || {});
+  }
+
+  function getPlotEntry(plotId) {
+    if (!plotId) return null;
+    const store = getPlotStore();
+    return store[plotId] || null;
+  }
+
+  function getDraftPlotId(draft) {
+    return (
+      draft?.plotId ||
+      draft?.character?.plotId ||
+      draft?.character?.id ||
+      null
+    );
+  }
+
+  function upsertPlotEntry(plotId, patch = {}) {
+    if (!plotId) return null;
+
+    const store = getPlotStore();
+    const prev = store[plotId] || {};
+    const next = {
+      ...prev,
+      ...patch,
+      plotId,
+      updatedAt: Date.now(),
+    };
+
+    if (patch.rooms || prev.rooms) {
+      next.rooms = {
+        ...(prev.rooms || {}),
+        ...(patch.rooms || {}),
+      };
+    }
+
+    store[plotId] = next;
+    savePlotStore(store);
+    return next;
+  }
+
+  function getPlotLabel(entry, fallbackId = '') {
+    return (
+      cleanText(entry?.title) ||
+      cleanText(entry?.character?.plotTitle) ||
+      cleanText(entry?.character?.name) ||
+      (fallbackId ? `플롯 ${fallbackId.slice(0, 6)}` : '플롯')
+    );
   }
 
   function getClientId() {
