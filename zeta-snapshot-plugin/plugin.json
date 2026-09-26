@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "zeta-snapshot-generator",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Load ZETA snapshots through MCP, generate scenes, and write generated images back to ZETA automatically.",
   "author": {
     "name": "ZETA Snapshot Generator"
