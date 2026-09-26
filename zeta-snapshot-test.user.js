@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.7.4
+// @version      0.7.5
 // @description  ZETA Snapshot collector + ChatGPT bridge + automatic result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -1981,6 +1981,28 @@
     const token = createData?.snapshot?.token;
     if (!token) throw new Error('토큰을 받지 못했어.');
 
+    // 새 workers.dev 호스트/배포가 엇갈리거나 D1 read-after-write가 늦는 경우를
+    // ChatGPT까지 넘기기 전에 여기서 먼저 잡는다.
+    let verifiedSnapshot = null;
+    let verifyError = null;
+    const verifyDelays = [0, 180, 420, 900, 1800, 3000];
+
+    for (const delay of verifyDelays) {
+      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+      try {
+        verifiedSnapshot = await fetchSnapshotFromRelay(token);
+        if (verifiedSnapshot) break;
+      } catch (err) {
+        verifyError = err;
+      }
+    }
+
+    if (!verifiedSnapshot) {
+      throw new Error(
+        `스냅샷 저장 직후 조회 확인 실패: ${String(verifyError?.message || verifyError || 'Snapshot not found')}`
+      );
+    }
+
     let charUpload = null;
     let userUpload = null;
 
@@ -3951,7 +3973,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.7.4 token handoff + resilient ChatGPT auto-submit ready');
+    console.log('[ZETA Snapshot] v0.7.5 snapshot verify + token handoff + resilient ChatGPT auto-submit ready');
   }
 
   init();
