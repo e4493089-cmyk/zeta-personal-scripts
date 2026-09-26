@@ -813,18 +813,46 @@
   }
 
   async function sendDraftToRelay(draft) {
+    const allCharacters =
+      Array.isArray(draft.characters) && draft.characters.length
+        ? draft.characters
+        : (Array.isArray(draft.character?.characters) && draft.character.characters.length
+            ? draft.character.characters
+            : [draft.character].filter(Boolean));
+
+    const selectedCharacters = allCharacters.filter(item => item.included !== false);
+    const primaryCharacter =
+      selectedCharacters.find(item => item.primary) ||
+      allCharacters.find(item => item.primary) ||
+      selectedCharacters[0] ||
+      allCharacters[0] ||
+      draft.character ||
+      {};
+
     const payload = {
       clientId: getClientId(),
       roomId: draft.roomId || 'manual-room',
       anchor: draft.anchor || { messageId: null, hash: null, preview: '' },
       messages: draft.messages || [],
       character: {
-        id: draft.character.id || null,
-        kind: 'character',
-        name: draft.character.name || '',
-        description: draft.character.description || '',
-        imageUrl: draft.character.imageUrl || '',
-        appearancePrompt: draft.character.appearancePrompt || '',
+        id: draft.character?.id || null,
+        plotId: draft.character?.plotId || draft.character?.id || null,
+        kind: allCharacters.length > 1 ? 'character_group' : 'character',
+        name: primaryCharacter.name || '',
+        description: primaryCharacter.description || '',
+        imageUrl: primaryCharacter.imageUrl || '',
+        appearancePrompt: primaryCharacter.appearancePrompt || '',
+        characters: allCharacters.map(item => ({
+          id: item.id || null,
+          slotId: item.slotId || null,
+          name: item.name || '',
+          description: item.description || '',
+          imageUrl: item.imageUrl || '',
+          appearancePrompt: item.appearancePrompt || '',
+          primary: !!item.primary,
+          included: item.included !== false,
+        })),
+        selectedCharacterIds: selectedCharacters.map(item => item.slotId || item.id || item.name),
         snapshotOptions: {
           stylePreset: draft.stylePreset,
           stylePrompt: STYLE_PRESETS[draft.stylePreset]?.prompt || '',
@@ -859,8 +887,8 @@
     let userUpload = null;
 
     try {
-      if (draft.character.imageUrl) {
-        charUpload = await uploadImageToRelay(token, 'character', draft.character.imageUrl);
+      if (primaryCharacter.imageUrl) {
+        charUpload = await uploadImageToRelay(token, 'character', primaryCharacter.imageUrl);
       }
     } catch (err) {
       charUpload = { error: String(err.message || err) };
@@ -876,6 +904,14 @@
 
     return {
       create: createData,
+      characterSlots: {
+        total: allCharacters.length,
+        selected: selectedCharacters.length,
+        primary: primaryCharacter.name || '',
+        note: allCharacters.length > 1
+          ? '현재 Worker는 대표 캐릭터 이미지 1장만 R2에 업로드하고, 나머지 캐릭터 정보/원본 이미지 URL은 character.characters에 저장함.'
+          : '',
+      },
       uploads: {
         character: charUpload,
         user: userUpload,
