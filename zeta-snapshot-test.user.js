@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.8
+// @version      0.6.9
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -1895,12 +1895,7 @@
 
           <div class="zs-actions">
             <button type="button" data-zs-action="close">닫기</button>
-            <button type="button" class="primary" data-zs-action="send-relay">스냅샷 만들기</button>
-          </div>
-
-          <div id="zs-handoff" class="zs-handoff" style="display:none">
-            <button type="button" data-zs-action="open-chatgpt">ChatGPT에서 이미지 생성</button>
-            <span>스냅샷은 저장됨 · 여기서 ChatGPT로 넘기면 됨</span>
+            <button id="zs-primary-action" type="button" class="primary" data-zs-action="send-relay">스냅샷 만들기</button>
           </div>
 
           <div class="zs-result-wrap">
@@ -2021,7 +2016,13 @@
           };
 
           const handoff = qs('#zs-handoff', state.overlay);
-          if (handoff) handoff.style.display = 'flex';
+          if (handoff) handoff.style.display = 'none';
+
+          const primaryAction = qs('#zs-primary-action', state.overlay);
+          if (primaryAction) {
+            primaryAction.dataset.zsAction = 'open-chatgpt';
+            primaryAction.textContent = 'ChatGPT에서 이미지 생성';
+          }
 
           state.resultBox.textContent = [
             '스냅샷 데이터 저장 완료',
@@ -2029,9 +2030,9 @@
             result.getSnapshotUrl || '',
             '',
             '이미지 생성은 아직 시작 전이야.',
-            '바로 위 [ChatGPT에서 이미지 생성] 버튼을 누르면 요청문을 복사하고 ChatGPT를 열어.'
+            '아래 고정된 흰색 [ChatGPT에서 이미지 생성] 버튼을 누르면 돼.'
           ].join('\n');
-          flash('스냅샷 저장 완료');
+          flash('저장 완료 · 아래 흰 버튼을 눌러줘');
         } catch (err) {
           console.error(err);
           state.resultBox.textContent = `오류:\n${String(err.message || err)}`;
@@ -2122,6 +2123,13 @@
 
     state.resultBox.textContent = '';
     state.lastCreatedSnapshotInfo = null;
+
+    const primaryAction = qs('#zs-primary-action', state.overlay);
+    if (primaryAction) {
+      primaryAction.dataset.zsAction = 'send-relay';
+      primaryAction.textContent = '스냅샷 만들기';
+    }
+
     const handoff = qs('#zs-handoff', state.overlay);
     if (handoff) handoff.style.display = 'none';
   }
@@ -3387,7 +3395,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.8 profile-hub collection + fallback popup + draggable launcher ready');
+    console.log('[ZETA Snapshot] v0.6.9 profile-hub collection + fallback popup + draggable launcher ready');
   }
 
   init();
