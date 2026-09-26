@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ZETA Snapshot Test Prototype
 // @namespace    zeta-snapshot-test
-// @version      0.4.0
-// @description  ZETA Snapshot collector/review/send prototype
+// @version      0.5.0
+// @description  ZETA Snapshot collector/review/send/result persistence
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
 // @run-at       document-idle
@@ -22,6 +22,7 @@
       USER: 'zetaSnapshot.userCache.v1',
       GLOBAL: 'zetaSnapshot.globalSettings.v1',
       PLOTS: 'zetaSnapshot.plots.v1',
+      SNAPSHOTS: 'zetaSnapshot.roomSnapshots.v1',
       CLIENT_ID: 'zetaSnapshot.clientId.v1',
     },
     DEFAULT_INSTRUCTIONS: [
@@ -52,6 +53,9 @@
     resultBox: null,
     currentDraft: null,
     activePlotId: null,
+    autosaveTimer: null,
+    roomPollTimers: new Map(),
+    lastObservedRoomId: null,
   };
 
   function qs(sel, root = document) { return root.querySelector(sel); }
@@ -251,80 +255,28 @@
     return parts.filter(Boolean).join('\n').trim();
   }
 
-  function inferAppearanceTags(sourceText) {
-    const text = String(sourceText || '');
-    const rules = [
-      [/금발|블론드|golden blond|blond/gi, '금발'],
-      [/흑발|검은 머리|black hair/gi, '흑발'],
-      [/백발|하얀 머리|white hair/gi, '백발'],
-      [/갈색 머리|brown hair/gi, '갈색 머리'],
-      [/장발|long hair/gi, '장발'],
-      [/단발|short hair/gi, '단발'],
-      [/파란 눈|푸른 눈|blue eyes/gi, '파란 눈'],
-      [/갈색 눈|brown eyes/gi, '갈색 눈'],
-      [/검은 눈|black eyes|dark eyes/gi, '검은 눈'],
-      [/안경|glasses/gi, '안경'],
-      [/키가 크|장신|tall/gi, '큰 키'],
-      [/작은 체구|작은 키|petite|small build/gi, '작은 체구'],
-      [/넓은 어깨|broad shoulders/gi, '넓은 어깨'],
-      [/마른 체형|slim/gi, '마른 체형'],
-      [/근육|탄탄한 체격|muscular/gi, '탄탄한 체격'],
-      [/문신|tattoo/gi, '문신'],
-      [/흉터|scar/gi, '흉터'],
-      [/무심한 인상|무뚝뚝/gi, '무심한 인상'],
-      [/순한 인상|온순한 인상/gi, '순한 인상'],
-      [/고양이상/gi, '고양이상'],
-      [/강아지상/gi, '강아지상'],
-    ];
-
-    const found = [];
-    for (const [regex, label] of rules) {
-      regex.lastIndex = 0;
-      if (regex.test(text) && !found.includes(label)) found.push(label);
-    }
-    return found;
-  }
-
-  function buildAutoAppearance(profile, recentText, kindLabel) {
-    const blocks = [];
-
-    if (profile.description) {
-      blocks.push(`[공개 설명]\n${profile.description}`);
-    }
-
-    const inferred = inferAppearanceTags(joinMaybe(profile.description, recentText));
-    if (inferred.length) {
-      blocks.push(`[자동 추출 단서]\n${inferred.join(', ')}`);
-    }
-
-    if (profile.imageUrl) {
-      blocks.push(`[레퍼런스]\n${kindLabel} 프로필 이미지 기반 외형/분위기 반영`);
-    }
-
-    if (!profile.imageUrl && !profile.description && !inferred.length) {
-      blocks.push('[정보 부족]\n프로필 이미지와 소개글이 없습니다. 대화에서 확인되는 정보만 참고하고, 필요한 경우 수동 입력 권장.');
-    }
-
-    return blocks.join('\n\n').trim();
+  function buildAutoAppearance(profile) {
+    return String(profile?.description || '').trim();
   }
 
   function collectRecentMessages(limit = CONFIG.MESSAGE_LIMIT) {
     const rows = [];
+    const nodes = qsa([
+      '[data-sentry-component="LeftTextContent"]',
+      '[data-sentry-component="RightTextContent"]',
+      '[data-sentry-component="NarratorBubble"]'
+    ].join(','));
 
-    qsa('[data-sentry-component="LeftTextContent"]').forEach(el => {
-      const text = cleanText(qs('.chat', el)?.innerText || el.innerText || '');
-      if (text) rows.push({ speaker: 'character', text });
-    });
+    for (const el of nodes) {
+      let speaker = 'unknown';
+      const kind = el.getAttribute('data-sentry-component') || '';
+      if (kind === 'LeftTextContent') speaker = 'character';
+      else if (kind === 'RightTextContent') speaker = 'user';
+      else if (kind === 'NarratorBubble') speaker = 'narrator';
 
-    qsa('[data-sentry-component="RightTextContent"]').forEach(el => {
       const text = cleanText(qs('.chat', el)?.innerText || el.innerText || '');
-      if (text) rows.push({ speaker: 'user', text });
-    });
-
-    qsa('[data-sentry-component="NarratorBubble"]').forEach(el => {
-      const text = cleanText(qs('.chat', el)?.innerText || el.innerText || '');
-      if (text) rows.push({ speaker: 'narrator', text });
-    });
+      if (text) rows.push({ speaker, text });
+    }
 
     if (!rows.length) {
       const fallbacks = qsa('main [class*="whitespace-pre-wrap"], main p, main div.break-words');
@@ -793,7 +745,7 @@
         appearancePrompt:
           item.manualAppearancePrompt ||
           item.appearancePrompt ||
-          buildAutoAppearance(item, characterText, `캐릭터 ${item.name || index + 1}`),
+          String(item.description || '').trim(),
       };
     });
 
@@ -838,7 +790,8 @@
         ...userProfile,
         appearancePrompt:
           userProfile.manualAppearancePrompt ||
-          buildAutoAppearance(userProfile, userText, '유저'),
+          userProfile.appearancePrompt ||
+          String(userProfile.description || '').trim(),
       },
     };
 
@@ -926,20 +879,20 @@
           slotId: character.id,
           primary: true,
           included: true,
-          appearancePrompt: buildAutoAppearance(character, recentText, '캐릭터'),
+          appearancePrompt: String(character.description || '').trim(),
         }],
-        appearancePrompt: buildAutoAppearance(character, recentText, '캐릭터'),
+        appearancePrompt: String(character.description || '').trim(),
       },
       characters: [{
         ...character,
         slotId: character.id,
         primary: true,
         included: true,
-        appearancePrompt: buildAutoAppearance(character, recentText, '캐릭터'),
+        appearancePrompt: String(character.description || '').trim(),
       }],
       userProfile: {
         ...baseUser,
-        appearancePrompt: buildAutoAppearance(baseUser, recentText, '유저'),
+        appearancePrompt: String(baseUser.description || '').trim(),
       },
     };
   }
@@ -1017,6 +970,311 @@
     }
 
     return data;
+  }
+
+
+  function getRoomSnapshotStore() {
+    return load(CONFIG.STORAGE.SNAPSHOTS, {}) || {};
+  }
+
+  function saveRoomSnapshotStore(store) {
+    save(CONFIG.STORAGE.SNAPSHOTS, store || {});
+  }
+
+  function getRoomSnapshotInfo(roomId) {
+    if (!roomId || roomId === 'manual-room') return null;
+    return getRoomSnapshotStore()[roomId] || null;
+  }
+
+  function setRoomSnapshotInfo(roomId, patch = {}) {
+    if (!roomId || roomId === 'manual-room') return null;
+    const store = getRoomSnapshotStore();
+    const prev = store[roomId] || {};
+    const next = {
+      ...prev,
+      ...patch,
+      roomId,
+      updatedAt: Date.now(),
+    };
+    store[roomId] = next;
+    saveRoomSnapshotStore(store);
+    return next;
+  }
+
+  async function fetchSnapshotFromRelay(token) {
+    const res = await fetch(
+      `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}`,
+      { method: 'GET' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.error || `스냅샷 조회 실패: ${res.status}`);
+    }
+    return data?.snapshot || data;
+  }
+
+  async function fetchSnapshotStatusFromRelay(token) {
+    const res = await fetch(
+      `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}/status`,
+      { method: 'GET' }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.error || `상태 조회 실패: ${res.status}`);
+    }
+    return data;
+  }
+
+  async function uploadResultFileToRelay(token, file) {
+    if (!file) throw new Error('업로드할 이미지가 없어.');
+    const mime = file.type || 'image/png';
+    const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+    if (!allowed.has(mime)) throw new Error('PNG/JPEG/WEBP/GIF만 업로드할 수 있어.');
+
+    const res = await fetch(
+      `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}/result`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': mime },
+        body: file,
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data?.error || `결과 업로드 실패: ${res.status}`);
+    }
+    return data;
+  }
+
+  function findAnchorElement(anchor) {
+    const preview = cleanText(anchor?.preview || '');
+    const nodes = qsa([
+      '[data-sentry-component="LeftTextContent"]',
+      '[data-sentry-component="RightTextContent"]',
+      '[data-sentry-component="NarratorBubble"]'
+    ].join(','));
+
+    if (preview) {
+      for (let i = nodes.length - 1; i >= 0; i--) {
+        const text = cleanText(qs('.chat', nodes[i])?.innerText || nodes[i].innerText || '');
+        if (!text) continue;
+        if (text === preview || text.startsWith(preview) || preview.startsWith(text.slice(0, 100))) {
+          return nodes[i];
+        }
+      }
+    }
+
+    return nodes[nodes.length - 1] || null;
+  }
+
+  function getInlineCardId(roomId, token) {
+    const safeRoom = String(roomId || 'room').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeToken = String(token || 'token').slice(0, 10).replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `zs-inline-${safeRoom}-${safeToken}`;
+  }
+
+  function ensureInlineCard(roomId, info = {}) {
+    if (!roomId || roomId === 'manual-room' || !info?.token) return null;
+    const id = getInlineCardId(roomId, info.token);
+    let card = document.getElementById(id);
+    if (card) return card;
+
+    card = document.createElement('section');
+    card.id = id;
+    card.className = 'zs-inline-card';
+    card.dataset.zsRoomId = roomId;
+    card.dataset.zsToken = info.token;
+
+    const anchorEl = findAnchorElement(info.anchor);
+    if (anchorEl?.parentNode) {
+      const host = anchorEl.closest('[data-sentry-component="ChatMessage"], li, article') || anchorEl;
+      host.insertAdjacentElement('afterend', card);
+    } else {
+      const host = qs('main') || document.body;
+      host.appendChild(card);
+    }
+
+    card.addEventListener('click', async e => {
+      const btn = e.target.closest('[data-zs-inline-action]');
+      if (!btn) return;
+
+      if (btn.dataset.zsInlineAction === 'refresh') {
+        await refreshRoomSnapshot(roomId, true).catch(err => flash(String(err.message || err)));
+        return;
+      }
+
+      if (btn.dataset.zsInlineAction === 'upload') {
+        card.querySelector('input[type="file"]')?.click();
+      }
+    });
+
+    card.addEventListener('change', async e => {
+      const input = e.target.closest('input[type="file"]');
+      if (!input) return;
+      const file = input.files?.[0];
+      if (!file) return;
+
+      try {
+        const uploadBtn = card.querySelector('[data-zs-inline-action="upload"]');
+        if (uploadBtn) {
+          uploadBtn.disabled = true;
+          uploadBtn.textContent = '업로드 중...';
+        }
+
+        await uploadResultFileToRelay(info.token, file);
+        flash('결과 이미지 업로드 완료');
+        await refreshRoomSnapshot(roomId, true);
+      } catch (err) {
+        console.error('[ZETA Snapshot] result upload failed', err);
+        flash(`결과 업로드 실패: ${String(err.message || err)}`, 3500);
+      } finally {
+        input.value = '';
+      }
+    });
+
+    return card;
+  }
+
+  function renderInlineSnapshotCard(roomId, info = {}, snapshot = null) {
+    const card = ensureInlineCard(roomId, info);
+    if (!card) return;
+
+    const status = snapshot?.status || info.status || 'pending';
+    const resultImageUrl = snapshot?.resultImageUrl || info.resultImageUrl || '';
+    const error = snapshot?.error || info.error || '';
+
+    card.innerHTML = `
+      <div class="zs-inline-card-head">
+        <div>
+          <strong>ZETA Snapshot</strong>
+          <span class="zs-inline-status" data-status="${status}">${status}</span>
+        </div>
+        <div class="zs-inline-card-actions">
+          <button type="button" data-zs-inline-action="refresh">새로고침</button>
+          <button type="button" data-zs-inline-action="upload">결과 업로드</button>
+        </div>
+      </div>
+      ${resultImageUrl ? `
+        <img class="zs-inline-result-image" src="${resultImageUrl}" alt="ZETA Snapshot result" />
+      ` : `
+        <div class="zs-inline-waiting">
+          ${status === 'failed'
+            ? '생성에 실패했어.'
+            : 'ChatGPT에서 이미지 생성 후 결과가 저장되면 여기에 표시돼.'}
+        </div>
+      `}
+      ${error ? `<div class="zs-inline-error">${cleanText(error)}</div>` : ''}
+      <input class="zs-inline-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+    `;
+
+    // innerHTML 교체 후에도 위임 리스너는 card 자체에 남아 있음.
+  }
+
+  async function refreshRoomSnapshot(roomId, force = false) {
+    const info = getRoomSnapshotInfo(roomId);
+    if (!info?.token) return null;
+
+    try {
+      const snapshot = await fetchSnapshotFromRelay(info.token);
+      const next = setRoomSnapshotInfo(roomId, {
+        ...info,
+        anchor: info.anchor || snapshot.anchor || null,
+        status: snapshot.status || info.status || 'pending',
+        resultImageUrl: snapshot.resultImageUrl || '',
+        error: snapshot.error || null,
+        expiresAt: snapshot.expiresAt || info.expiresAt || null,
+      });
+
+      renderInlineSnapshotCard(roomId, next, snapshot);
+
+      if (next.status === 'completed' || next.resultImageUrl || next.status === 'failed') {
+        stopRoomSnapshotPolling(roomId);
+      } else if (force) {
+        startRoomSnapshotPolling(roomId);
+      }
+
+      return next;
+    } catch (err) {
+      const message = String(err.message || err);
+      const next = setRoomSnapshotInfo(roomId, { ...info, error: message });
+      renderInlineSnapshotCard(roomId, next, null);
+      throw err;
+    }
+  }
+
+  function stopRoomSnapshotPolling(roomId) {
+    const timer = state.roomPollTimers.get(roomId);
+    if (timer) clearInterval(timer);
+    state.roomPollTimers.delete(roomId);
+  }
+
+  function startRoomSnapshotPolling(roomId) {
+    if (!roomId || roomId === 'manual-room') return;
+    stopRoomSnapshotPolling(roomId);
+
+    const info = getRoomSnapshotInfo(roomId);
+    if (!info?.token) return;
+
+    renderInlineSnapshotCard(roomId, info, null);
+
+    const tick = () => {
+      refreshRoomSnapshot(roomId).catch(err => {
+        console.warn('[ZETA Snapshot] polling failed', err);
+      });
+    };
+
+    tick();
+    state.roomPollTimers.set(roomId, setInterval(tick, 8000));
+  }
+
+  function restoreSnapshotForCurrentRoom() {
+    const roomId = getRoomId();
+    if (!roomId || roomId === 'manual-room') return;
+
+    const info = getRoomSnapshotInfo(roomId);
+    if (!info?.token) return;
+
+    renderInlineSnapshotCard(roomId, info, null);
+
+    if (info.status === 'completed' && info.resultImageUrl) {
+      refreshRoomSnapshot(roomId).catch(() => {});
+    } else {
+      startRoomSnapshotPolling(roomId);
+    }
+  }
+
+  function scheduleDraftAutosave() {
+    clearTimeout(state.autosaveTimer);
+    state.autosaveTimer = setTimeout(() => {
+      if (!state.overlay || state.overlay.style.display === 'none' || !state.currentDraft) return;
+      try {
+        const draft = readFormToDraft();
+        persistFromDraft(draft);
+        state.currentDraft = structuredClone(draft);
+      } catch (err) {
+        console.warn('[ZETA Snapshot] autosave failed', err);
+      }
+    }, 450);
+  }
+
+  function watchRoomNavigation() {
+    const check = () => {
+      const roomId = getRoomId();
+      if (roomId === state.lastObservedRoomId) return;
+
+      if (state.lastObservedRoomId && state.lastObservedRoomId !== 'manual-room') {
+        stopRoomSnapshotPolling(state.lastObservedRoomId);
+      }
+
+      state.lastObservedRoomId = roomId;
+
+      if (roomId && roomId !== 'manual-room') {
+        setTimeout(restoreSnapshotForCurrentRoom, 600);
+      }
+    };
+
+    check();
+    setInterval(check, 1000);
   }
 
   async function sendDraftToRelay(draft) {
@@ -1109,6 +1367,24 @@
       userUpload = { error: String(err.message || err) };
     }
 
+    const roomId = draft.roomId || 'manual-room';
+    const snapshotInfo = setRoomSnapshotInfo(roomId, {
+      token,
+      snapshotId: createData?.snapshot?.id || null,
+      plotId: getDraftPlotId(draft),
+      anchor: draft.anchor || null,
+      status: createData?.snapshot?.status || 'pending',
+      resultImageUrl: '',
+      snapshotUrl: `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}`,
+      statusUrl: `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}/status`,
+      expiresAt: createData?.snapshot?.expiresAt || null,
+    });
+
+    if (snapshotInfo) {
+      renderInlineSnapshotCard(roomId, snapshotInfo, null);
+      startRoomSnapshotPolling(roomId);
+    }
+
     return {
       create: createData,
       characterSlots: {
@@ -1123,6 +1399,7 @@
         character: charUpload,
         user: userUpload,
       },
+      token,
       getSnapshotUrl: `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}`,
       getStatusUrl: `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}/status`,
     };
@@ -1320,7 +1597,7 @@
       fields.append(
         makeField('이름', 'name', item.name),
         makeField('원본 설명', 'description', item.description, true),
-        makeField('외형 프롬프트', 'appearancePrompt', item.appearancePrompt, true),
+        makeField('외형 프롬프트 (원본 설명 복사 · 수정 가능)', 'appearancePrompt', item.appearancePrompt || item.description || '', true),
         makeField('프로필 이미지 URL', 'imageUrl', item.imageUrl)
       );
 
@@ -1387,9 +1664,7 @@
 
         <div class="zs-tools">
           <button type="button" data-zs-action="load-real">현재 플롯 다시 수집</button>
-          <button type="button" data-zs-action="mock-image-only">테스트: 프사만</button>
-          <button type="button" data-zs-action="mock-full">테스트: 프사+설명</button>
-          <button type="button" data-zs-action="mock-empty">테스트: 아무것도 없음</button>
+          <span class="zs-autosave-badge">자동 저장</span>
         </div>
 
         <div class="zs-body">
@@ -1427,7 +1702,7 @@
             </div>
 
             <div class="zs-field zs-span2">
-              <label>유저 외형 프롬프트 (자동 수집 + 수정 가능)</label>
+              <label>유저 외형 프롬프트 (원본 설명 복사 · 수정 가능)</label>
               <textarea id="zs-user-appearance"></textarea>
             </div>
 
@@ -1453,8 +1728,7 @@
           </div>
 
           <div class="zs-actions">
-            <button type="button" class="primary" data-zs-action="save-local">로컬 저장</button>
-            <button type="button" class="primary" data-zs-action="send-relay">서버로 테스트 전송</button>
+            <button type="button" class="primary" data-zs-action="send-relay">스냅샷 만들기</button>
             <button type="button" data-zs-action="close">닫기</button>
           </div>
 
@@ -1516,10 +1790,6 @@
           return;
         }
       }
-      if (action === 'mock-image-only') return openDraft(getMockDraft('image-only'));
-      if (action === 'mock-full') return openDraft(getMockDraft('full'));
-      if (action === 'mock-empty') return openDraft(getMockDraft('empty'));
-
       if (action === 'add-character-slot') {
         const characters = readCharacterSlots();
         characters.push({
@@ -1558,8 +1828,15 @@
           persistFromDraft(draft);
           state.resultBox.textContent = '전송 중...';
           const result = await sendDraftToRelay(draft);
-          state.resultBox.textContent = JSON.stringify(result, null, 2);
-          flash('서버 전송 성공');
+          state.resultBox.textContent = [
+            '스냅샷 생성 완료',
+            '',
+            result.getSnapshotUrl || '',
+            '',
+            'ChatGPT에서 위 스냅샷 URL을 ZETA Snapshot Generator에 전달해 이미지를 생성해줘.',
+            '결과가 Worker에 저장되면 현재 대화 아래 카드에 자동 표시돼.'
+          ].join('\n');
+          flash('스냅샷 생성 완료');
         } catch (err) {
           console.error(err);
           state.resultBox.textContent = `오류:\n${String(err.message || err)}`;
@@ -1584,6 +1861,12 @@
       if (e.target.id === 'zs-user-image') {
         qs('#zs-user-preview', overlay).src = e.target.value || '';
       }
+
+      scheduleDraftAutosave();
+    });
+
+    overlay.addEventListener('change', () => {
+      scheduleDraftAutosave();
     });
   }
 
@@ -1593,6 +1876,15 @@
   }
 
   function closeModal() {
+    if (state.currentDraft && state.overlay && state.overlay.style.display !== 'none') {
+      try {
+        const draft = readFormToDraft();
+        persistFromDraft(draft);
+        state.currentDraft = structuredClone(draft);
+      } catch (err) {
+        console.warn('[ZETA Snapshot] close autosave failed', err);
+      }
+    }
     if (state.overlay) state.overlay.style.display = 'none';
   }
 
@@ -1614,11 +1906,17 @@
             ? draft.character.characters
             : [draft.character].filter(Boolean));
 
-    renderCharacterSlots(characters);
+    renderCharacterSlots(characters.map(item => ({
+      ...item,
+      appearancePrompt: item.appearancePrompt || item.description || '',
+    })));
 
     qs('#zs-user-name').value = draft.userProfile.name || '';
     qs('#zs-user-desc').value = draft.userProfile.description || '';
-    qs('#zs-user-appearance').value = draft.userProfile.appearancePrompt || '';
+    qs('#zs-user-appearance').value =
+      draft.userProfile.appearancePrompt ||
+      draft.userProfile.description ||
+      '';
     qs('#zs-user-image').value = draft.userProfile.imageUrl || '';
     qs('#zs-user-preview').src = draft.userProfile.imageUrl || '';
 
@@ -1741,57 +2039,23 @@
     const wrap = document.createElement('div');
     wrap.className = 'zs-launcher';
     wrap.innerHTML = `
-      <button type="button" data-zs-launch="draft" title="스냅샷 초안">📷</button>
-      <button type="button" data-zs-launch="character" title="현재 페이지 캐릭터 저장">🎭</button>
-      <button type="button" data-zs-launch="user" title="체크된 유저 프로필 저장">👤</button>
-      <button type="button" data-zs-launch="test" title="테스트 케이스">🧪</button>
+      <button type="button" data-zs-launch="draft" title="ZETA Snapshot">📷</button>
     `;
 
     wrap.addEventListener('click', e => {
-      const btn = e.target.closest('[data-zs-launch]');
+      const btn = e.target.closest('[data-zs-launch="draft"]');
       if (!btn) return;
 
-      const type = btn.dataset.zsLaunch;
-
-      try {
-        if (type === 'character') {
-          const profile = collectCharacterProfileFromCurrentPage();
-          const count = Array.isArray(profile.characters) ? profile.characters.length : 1;
-          flash(`캐릭터 저장: ${count}명`);
-          return;
+      (async () => {
+        try {
+          flash('프로필 수집 중...');
+          openDraft(await buildDraftFromCache());
+          flash('수집 완료');
+        } catch (err) {
+          console.error(err);
+          alert(String(err.message || err));
         }
-
-        if (type === 'user') {
-          const profile = collectSelectedUserProfileFromDialog();
-          const plotId = getPlotIdFromUrl() || state.activePlotId || null;
-          if (plotId) {
-            upsertPlotEntry(plotId, { userProfile: profile });
-          }
-          flash(`유저 저장: ${profile.name}`);
-          return;
-        }
-
-        if (type === 'draft') {
-          (async () => {
-            try {
-              flash('프로필 자동 수집 중...');
-              openDraft(await buildDraftFromCache());
-              flash('자동 수집 완료');
-            } catch (err) {
-              console.error(err);
-              alert(String(err.message || err));
-            }
-          })();
-          return;
-        }
-
-        if (type === 'test') {
-          openDraft(getMockDraft('image-only'));
-        }
-      } catch (err) {
-        console.error(err);
-        alert(String(err.message || err));
-      }
+      })();
     });
 
     document.body.appendChild(wrap);
@@ -1873,6 +2137,7 @@
       }
       .zs-plot-tab{
         flex:0 0 auto;
+        min-height:34px;
         display:flex;
         align-items:center;
         gap:7px;
@@ -1880,10 +2145,10 @@
         border:1px solid #dbe1e8;
         background:#f8fafc;
         color:#475569;
-        padding:8px 11px;
+        padding:9px 14px;
         border-radius:999px;
         cursor:pointer;
-        font-size:12px;
+        font-size:13px;
         line-height:1;
       }
       .zs-plot-tab:hover{
@@ -1910,6 +2175,13 @@
         gap:8px;
         flex-wrap:wrap;
         padding:12px 18px 0;
+      }
+      .zs-autosave-badge{
+        display:inline-flex;
+        align-items:center;
+        padding:0 4px;
+        font-size:12px;
+        color:#64748b;
       }
       .zs-tools button,
       .zs-actions button{
@@ -2132,6 +2404,86 @@
         font-size:12px;
         line-height:1.5;
       }
+
+      .zs-inline-card{
+        box-sizing:border-box;
+        width:min(640px, calc(100% - 32px));
+        margin:14px auto;
+        padding:12px;
+        border:1px solid rgba(148,163,184,.28);
+        border-radius:16px;
+        background:rgba(255,255,255,.96);
+        color:#111827;
+        box-shadow:0 6px 22px rgba(15,23,42,.08);
+        position:relative;
+        z-index:2;
+      }
+      .zs-inline-card-head{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:10px;
+        margin-bottom:10px;
+      }
+      .zs-inline-card-head > div:first-child{
+        display:flex;
+        align-items:center;
+        gap:8px;
+        min-width:0;
+      }
+      .zs-inline-card-head strong{ font-size:13px; }
+      .zs-inline-status{
+        font-size:11px;
+        color:#64748b;
+        background:#f1f5f9;
+        border-radius:999px;
+        padding:4px 7px;
+      }
+      .zs-inline-status[data-status="completed"]{
+        background:#dcfce7;
+        color:#166534;
+      }
+      .zs-inline-status[data-status="failed"]{
+        background:#fee2e2;
+        color:#991b1b;
+      }
+      .zs-inline-card-actions{
+        display:flex;
+        gap:6px;
+        flex-wrap:wrap;
+        justify-content:flex-end;
+      }
+      .zs-inline-card-actions button{
+        border:none;
+        border-radius:8px;
+        padding:7px 9px;
+        background:#e5e7eb;
+        color:#111827;
+        font-size:11px;
+        cursor:pointer;
+      }
+      .zs-inline-result-image{
+        display:block;
+        width:100%;
+        max-height:720px;
+        object-fit:contain;
+        border-radius:12px;
+        background:#f8fafc;
+      }
+      .zs-inline-waiting{
+        padding:16px 10px;
+        border-radius:12px;
+        background:#f8fafc;
+        color:#64748b;
+        font-size:12px;
+        text-align:center;
+      }
+      .zs-inline-error{
+        margin-top:8px;
+        color:#b91c1c;
+        font-size:11px;
+        line-height:1.45;
+      }
       .zs-toast{
         position:fixed;
         left:50%;
@@ -2170,7 +2522,9 @@
   function init() {
     injectStyles();
     createLauncher();
-    console.log('[ZETA Snapshot Test] ready');
+    watchRoomNavigation();
+    setTimeout(restoreSnapshotForCurrentRoom, 900);
+    console.log('[ZETA Snapshot] v0.5.0 ready');
   }
 
   init();
