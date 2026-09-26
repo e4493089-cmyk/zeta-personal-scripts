@@ -1531,7 +1531,7 @@ async function handleMcp(request, env) {
     return mcpOk(id, {
       protocolVersion: rpc.params?.protocolVersion || "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "zeta-snapshot", version: "3.1.1" },
+      serverInfo: { name: "zeta-snapshot", version: "3.1.2" },
       instructions: "Read snapshots with get_snapshot. After generating an image, save it with save_snapshot_result using the same token and generated image file."
     });
   }
@@ -1681,7 +1681,7 @@ function buildMcpSnapshot(row, token) {
 
 async function mcpGetSnapshot(env, args) {
   const token = requireMcpToken(args);
-  const row = await findSnapshot(env, token);
+  const row = await findSnapshotWithRetry(env, token);
   if (!row) throw new Error("Snapshot not found");
   if (isExpired(row)) throw new Error("Snapshot expired");
   const snapshot = buildMcpSnapshot(row, token);
@@ -1694,7 +1694,7 @@ async function mcpGetSnapshot(env, args) {
 
 async function mcpGetSnapshotStatus(env, args) {
   const token = requireMcpToken(args);
-  const row = await findSnapshot(env, token);
+  const row = await findSnapshotWithRetry(env, token);
   if (!row) throw new Error("Snapshot not found");
   if (isExpired(row)) throw new Error("Snapshot expired");
 
@@ -1768,7 +1768,7 @@ async function readStoredSnapshotReference(env, key) {
 
 async function mcpGetSnapshotReferenceImages(env, args) {
   const token = requireMcpToken(args);
-  const row = await findSnapshot(env, token);
+  const row = await findSnapshotWithRetry(env, token);
   if (!row) throw new Error("Snapshot not found");
   if (isExpired(row)) throw new Error("Snapshot expired");
 
@@ -1887,7 +1887,7 @@ async function mcpSaveSnapshotResult(env, args) {
     throw new Error("Image download URL must use HTTPS");
   }
 
-  const row = await findSnapshot(env, token);
+  const row = await findSnapshotWithRetry(env, token);
   if (!row) throw new Error("Snapshot not found");
   if (isExpired(row)) throw new Error("Snapshot expired");
 
@@ -1994,6 +1994,20 @@ async function findSnapshot(env, token) {
 
     .first();
 
+}
+
+async function findSnapshotWithRetry(env, token, attempts = 6) {
+  const delays = [0, 120, 250, 500, 900, 1500];
+
+  for (let index = 0; index < attempts; index += 1) {
+    const delay = delays[Math.min(index, delays.length - 1)] || 0;
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+
+    const row = await findSnapshot(env, token);
+    if (row) return row;
+  }
+
+  return null;
 }
 
 
