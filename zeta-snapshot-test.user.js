@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.11
+// @version      0.6.12
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -2711,6 +2711,7 @@
         overflow:hidden;
         display:flex;
         flex-direction:column;
+        min-height:0;
         background:#18181b;
         color:#f4f4f5;
         border:1px solid rgba(255,255,255,.08);
@@ -2718,6 +2719,7 @@
         box-shadow:0 28px 80px rgba(0,0,0,.5);
       }
       .zs-head{
+        flex:0 0 auto;
         display:flex;
         align-items:center;
         justify-content:space-between;
@@ -2756,13 +2758,18 @@
 
       .zs-plot-tabs{
         display:none;
+        flex:0 0 58px;
         width:100%;
+        height:58px;
+        min-height:58px;
+        max-height:58px;
         box-sizing:border-box;
+        align-items:center;
         gap:8px;
         overflow-x:auto;
         overflow-y:hidden;
         flex-wrap:nowrap;
-        padding:12px 16px 4px;
+        padding:8px 16px;
         scrollbar-width:none;
         -webkit-overflow-scrolling:touch;
         overscroll-behavior-x:contain;
@@ -2825,6 +2832,7 @@
       }
 
       .zs-tools{
+        flex:0 0 auto;
         display:flex;
         align-items:center;
         gap:9px;
@@ -2858,7 +2866,10 @@
       }
 
       .zs-body{
-        overflow:auto;
+        flex:1 1 auto;
+        min-height:0;
+        overflow-y:auto;
+        overflow-x:hidden;
         overscroll-behavior:contain;
         padding:14px 16px 92px;
       }
@@ -3295,7 +3306,11 @@
         .zs-subtitle{ display:none; }
         .zs-title{ font-size:17px; }
         .zs-plot-tabs{
-          padding:10px 12px 4px;
+          flex:0 0 56px;
+          height:56px;
+          min-height:56px;
+          max-height:56px;
+          padding:8px 12px;
           gap:7px;
           overflow-x:auto;
           overflow-y:hidden;
@@ -3416,7 +3431,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.11 profile-hub collection + fallback popup + draggable launcher ready');
+    console.log('[ZETA Snapshot] v0.6.12 profile-hub collection + fallback popup + draggable launcher ready');
   }
 
   init();
