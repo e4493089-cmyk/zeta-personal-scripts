@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot Test Prototype
 // @namespace    zeta-snapshot-test
-// @version      0.3.0
+// @version      0.3.1
 // @description  ZETA Snapshot collector/review/send prototype
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -343,11 +343,39 @@
     return profile;
   }
 
-  function parseUserProfileEditDoc(doc, plotId, roomId) {
+  function isUsableUserProfileImage(url) {
+    const value = String(url || '');
+    if (!value) return false;
+    if (/default-profile|default_profile|placeholder|avatar-default/i.test(value)) return false;
+    return /\/user-plot-chat-profile-image\//.test(value);
+  }
+
+  function extractUserProfileImageFromHtml(html) {
+    const normalized = String(html || '')
+      .replace(/\\u0026/g, '&')
+      .replace(/&amp;/g, '&')
+      .replace(/\\\//g, '/');
+
+    const matches = normalized.match(
+      /https:\/\/image\.zeta-ai\.io\/user-plot-chat-profile-image\/[^"'<>\\\s)]+/g
+    ) || [];
+
+    const candidates = matches
+      .map(url => stripImageTransform(url))
+      .filter(isUsableUserProfileImage);
+
+    return candidates[0] || '';
+  }
+
+  function parseUserProfileEditDoc(doc, plotId, roomId, fallbackImageUrl = '') {
     const name = cleanText(doc.querySelector('input[name="name"]')?.value || '');
     const description = String(doc.querySelector('textarea[name="description"]')?.value || '').trim();
-    const img = doc.querySelector('img[alt="profile image"]');
-    const imageUrl = imageUrlFromImg(img);
+
+    const imgs = [...doc.querySelectorAll('img[alt="profile image"], img[src*="user-plot-chat-profile-image"]')];
+    const imageUrl =
+      imgs.map(img => imageUrlFromImg(img))
+        .find(isUsableUserProfileImage) ||
+      (isUsableUserProfileImage(fallbackImageUrl) ? stripImageTransform(fallbackImageUrl) : '');
 
     const imageProfileId =
       imageUrl.match(/\/user-plot-chat-profile-image\/([^/]+)\//)?.[1] || null;
@@ -369,9 +397,48 @@
     };
   }
 
+  function getSelectedUserProfileIfOpen() {
+    const dialog =
+      qs('section[role="dialog"][aria-label*="대화 프로필"]') ||
+      qs('[role="group"][aria-label="My chat profiles"]')?.closest('section[role="dialog"]');
+
+    if (!dialog) return null;
+
+    try {
+      return collectSelectedUserProfileFromDialog();
+    } catch {
+      return null;
+    }
+  }
+
   async function collectCurrentUserProfileFromEditPage(plotId, roomId) {
     if (!plotId || !roomId || roomId === 'manual-room') {
       throw new Error('plotId 또는 roomId가 없어 현재 프로필을 자동 수집할 수 없어.');
+    }
+
+    const cached = load(CONFIG.STORAGE.USER, null);
+    const selected = getSelectedUserProfileIfOpen();
+
+    const currentEditMatch = location.pathname.match(
+      /\/my-plot-chat-profile\/([^/?#]+)\/([^/?#]+)\/edit/
+    );
+
+    if (
+      currentEditMatch &&
+      currentEditMatch[1] === plotId &&
+      currentEditMatch[2] === roomId
+    ) {
+      const liveHtml = document.documentElement?.innerHTML || '';
+      const fallback = extractUserProfileImageFromHtml(liveHtml);
+      const live = parseUserProfileEditDoc(document, plotId, roomId, fallback);
+
+      if (!isUsableUserProfileImage(live.imageUrl)) {
+        if (selected && isUsableUserProfileImage(selected.imageUrl)) live.imageUrl = selected.imageUrl;
+        else if (cached?.name === live.name && isUsableUserProfileImage(cached.imageUrl)) live.imageUrl = cached.imageUrl;
+      }
+
+      save(CONFIG.STORAGE.USER, live);
+      return live;
     }
 
     const url = `/ko/my-plot-chat-profile/${encodeURIComponent(plotId)}/${encodeURIComponent(roomId)}/edit`;
@@ -382,8 +449,20 @@
     }
 
     const html = await res.text();
+    const fallback = extractUserProfileImageFromHtml(html);
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    const profile = parseUserProfileEditDoc(doc, plotId, roomId);
+    const profile = parseUserProfileEditDoc(doc, plotId, roomId, fallback);
+
+    if (selected?.name === profile.name && isUsableUserProfileImage(selected.imageUrl)) {
+      profile.imageUrl = stripImageTransform(selected.imageUrl);
+    } else if (
+      cached?.name === profile.name &&
+      isUsableUserProfileImage(cached.imageUrl) &&
+      !isUsableUserProfileImage(profile.imageUrl)
+    ) {
+      profile.imageUrl = stripImageTransform(cached.imageUrl);
+    }
+
     save(CONFIG.STORAGE.USER, profile);
     return profile;
   }
