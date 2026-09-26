@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.6
+// @version      0.6.7
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -57,6 +57,7 @@
     activePlotId: null,
     autosaveTimer: null,
     roomPollTimers: new Map(),
+    inlineMountTimers: new Map(),
     lastObservedRoomId: null,
     collectResumeBusy: false,
   };
@@ -1125,25 +1126,44 @@
     return data?.snapshot || data;
   }
 
-  function findAnchorElement(anchor) {
+  function inferSpeakerFromNode(node) {
+    const kind = node?.getAttribute?.('data-sentry-component') || '';
+    if (kind === 'LeftTextContent') return 'character';
+    if (kind === 'RightTextContent') return 'user';
+    if (kind === 'NarratorBubble') return 'narrator';
+    return 'unknown';
+  }
+
+  function findAnchorElement(anchor, allowFallback = false) {
     const preview = cleanText(anchor?.preview || '');
+    const hash = String(anchor?.hash || '');
     const nodes = qsa([
       '[data-sentry-component="LeftTextContent"]',
       '[data-sentry-component="RightTextContent"]',
       '[data-sentry-component="NarratorBubble"]'
     ].join(','));
 
-    if (preview) {
-      for (let i = nodes.length - 1; i >= 0; i--) {
-        const text = cleanText(qs('.chat', nodes[i])?.innerText || nodes[i].innerText || '');
-        if (!text) continue;
-        if (text === preview || text.startsWith(preview) || preview.startsWith(text.slice(0, 100))) {
-          return nodes[i];
-        }
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const text = cleanText(qs('.chat', nodes[i])?.innerText || nodes[i].innerText || '');
+      if (!text) continue;
+
+      if (hash) {
+        const speaker = inferSpeakerFromNode(nodes[i]);
+        if (simpleHash(`${speaker}:${text}`) === hash) return nodes[i];
+      }
+
+      if (
+        preview &&
+        (text === preview ||
+         text.startsWith(preview) ||
+         preview.startsWith(text.slice(0, 100)))
+      ) {
+        return nodes[i];
       }
     }
 
-    return nodes[nodes.length - 1] || null;
+    if (allowFallback) return nodes[nodes.length - 1] || null;
+    return null;
   }
 
   function getInlineCardId(roomId, token) {
@@ -1152,39 +1172,135 @@
     return `zs-inline-${safeRoom}-${safeToken}`;
   }
 
+  function getAnchorHost(anchorEl) {
+    return (
+      anchorEl?.closest?.('[data-index][data-key]') ||
+      anchorEl?.closest?.('[data-sentry-component="ChatMessage"], [data-sentry-component="MessageItem"], li, article') ||
+      anchorEl ||
+      null
+    );
+  }
+
+  function placeInlineCard(card, info = {}, allowFallback = false) {
+    const anchorEl = findAnchorElement(info.anchor, allowFallback);
+    const host = getAnchorHost(anchorEl);
+    if (!host?.parentNode) return false;
+
+    if (card.previousElementSibling !== host || card.parentNode !== host.parentNode) {
+      host.insertAdjacentElement('afterend', card);
+    }
+    card.style.display = '';
+    return true;
+  }
+
+  function scheduleInlineCardMount(roomId, info = {}) {
+    const key = getInlineCardId(roomId, info.token);
+    if (state.inlineMountTimers.has(key)) return;
+
+    let attempt = 0;
+    const timer = setInterval(() => {
+      attempt += 1;
+      const card = document.getElementById(key);
+      if (!card) {
+        clearInterval(timer);
+        state.inlineMountTimers.delete(key);
+        return;
+      }
+
+      const placed = placeInlineCard(card, info, attempt >= 16);
+      if (placed || attempt >= 20) {
+        clearInterval(timer);
+        state.inlineMountTimers.delete(key);
+      }
+    }, 350);
+
+    state.inlineMountTimers.set(key, timer);
+  }
+
   function ensureInlineCard(roomId, info = {}) {
     if (!roomId || roomId === 'manual-room' || !info?.token) return null;
     const id = getInlineCardId(roomId, info.token);
     let card = document.getElementById(id);
-    if (card) return card;
 
-    card = document.createElement('section');
-    card.id = id;
-    card.className = 'zs-inline-card';
-    card.dataset.zsRoomId = roomId;
-    card.dataset.zsToken = info.token;
+    if (!card) {
+      card = document.createElement('section');
+      card.id = id;
+      card.className = 'zs-inline-card';
+      card.dataset.zsRoomId = roomId;
+      card.dataset.zsToken = info.token;
+      card.style.display = 'none';
+      document.body.appendChild(card);
 
-    const anchorEl = findAnchorElement(info.anchor);
-    if (anchorEl?.parentNode) {
-      const host = anchorEl.closest('[data-sentry-component="ChatMessage"], li, article') || anchorEl;
-      host.insertAdjacentElement('afterend', card);
-    } else {
-      const host = qs('main') || document.body;
-      host.appendChild(card);
+      card.addEventListener('click', async e => {
+        const btn = e.target.closest('[data-zs-inline-action]');
+        if (!btn) return;
+
+        if (btn.dataset.zsInlineAction === 'refresh') {
+          await refreshRoomSnapshot(roomId, true).catch(err => flash(String(err.message || err)));
+          return;
+        }
+
+        if (btn.dataset.zsInlineAction === 'chatgpt') {
+          const current = getRoomSnapshotInfo(roomId) || info;
+          await openSnapshotInChatGPT(current);
+          return;
+        }
+      });
     }
 
-    card.addEventListener('click', async e => {
-      const btn = e.target.closest('[data-zs-inline-action]');
-      if (!btn) return;
-
-      if (btn.dataset.zsInlineAction === 'refresh') {
-        await refreshRoomSnapshot(roomId, true).catch(err => flash(String(err.message || err)));
-        return;
-      }
-
-    });
+    if (!placeInlineCard(card, info, false)) {
+      scheduleInlineCardMount(roomId, info);
+    }
 
     return card;
+  }
+
+  function buildChatGPTPrompt(snapshotUrl) {
+    return [
+      '@ZETA Snapshot Generator',
+      '이 스냅샷을 불러와서 포함된 캐릭터/유저 프로필, 최근 장면, 저장된 스타일을 반영해 이미지를 생성해줘.',
+      '참조 이미지가 있으면 같이 사용해.',
+      snapshotUrl || ''
+    ].filter(Boolean).join('\n');
+  }
+
+  async function copyText(text) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+
+  async function openSnapshotInChatGPT(info = {}) {
+    const snapshotUrl =
+      info.snapshotUrl ||
+      (info.token ? `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(info.token)}` : '');
+
+    if (!snapshotUrl) {
+      flash('스냅샷 URL이 없어.');
+      return;
+    }
+
+    const prompt = buildChatGPTPrompt(snapshotUrl);
+
+    try {
+      await copyText(prompt);
+      flash('ChatGPT 요청문 복사 완료 · 붙여넣기만 하면 돼.');
+    } catch (err) {
+      console.warn('[ZETA Snapshot] copy prompt failed', err);
+      flash('요청문 복사 실패 · 스냅샷 URL을 직접 붙여넣어줘.');
+    }
+
+    window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer');
   }
 
   function renderInlineSnapshotCard(roomId, info = {}, snapshot = null) {
@@ -1202,6 +1318,9 @@
           <span class="zs-inline-status" data-status="${status}">${status}</span>
         </div>
         <div class="zs-inline-card-actions">
+          ${status !== 'completed' && !resultImageUrl
+            ? '<button type="button" data-zs-inline-action="chatgpt">ChatGPT 열기</button>'
+            : ''}
           <button type="button" data-zs-inline-action="refresh">새로고침</button>
         </div>
       </div>
@@ -1211,7 +1330,7 @@
         <div class="zs-inline-waiting">
           ${status === 'failed'
             ? '생성에 실패했어.'
-            : 'ChatGPT 이미지 생성이 끝나면 MCP가 결과를 저장하고 여기에 자동 표시돼.'}
+            : '스냅샷은 만들어졌어. ChatGPT에서 ZETA Snapshot Generator를 실행해야 이미지 생성이 시작돼.'}
         </div>
       `}
       ${error ? `<div class="zs-inline-error">${cleanText(error)}</div>` : ''}
@@ -1897,8 +2016,8 @@
             '',
             result.getSnapshotUrl || '',
             '',
-            'ChatGPT에서 위 스냅샷 URL을 ZETA Snapshot Generator에 전달해 이미지를 생성해줘.',
-            '생성된 이미지는 MCP가 Worker에 자동 저장하고 현재 대화 아래 카드에 표시돼.'
+            '아래 대화 카드의 [ChatGPT 열기]를 누르면 요청문을 복사하고 ChatGPT를 열어.',
+            'ChatGPT에서 붙여넣어 ZETA Snapshot Generator를 실행하면 이미지 생성이 시작돼.'
           ].join('\n');
           flash('스냅샷 생성 완료');
         } catch (err) {
@@ -2089,16 +2208,12 @@
   }
 
   function findUserProfileHubTrigger() {
-    // 현재 사용 프로필 카드 오른쪽의 편집 버튼 바로 앞 버튼이
-    // 대화 프로필 허브를 여는 실제 트리거다.
     const editCurrent = qs('button[aria-label="edit-my-plot-chat-profile"]');
     const previous = editCurrent?.previousElementSibling;
     if (previous?.tagName === 'BUTTON' && previous.offsetParent) {
       return previous;
     }
 
-    // ZETA가 이미지 경로를 user-chat-profile-image /
-    // user-plot-chat-profile-image 둘 중 하나로 쓰는 경우 모두 대응.
     const buttons = qsa('button').filter(btn => {
       if (!btn.offsetParent) return false;
       const img = btn.querySelector('img');
@@ -2107,6 +2222,39 @@
     });
 
     return buttons[buttons.length - 1] || null;
+  }
+
+  function findProfileActionInOpenPanel() {
+    const root = qs('#portal-container') || document;
+    const buttons = qsa('button', root).filter(btn => btn.offsetParent);
+
+    return buttons.find(btn => {
+      const label = cleanText(
+        [
+          btn.getAttribute('aria-label') || '',
+          btn.getAttribute('title') || '',
+          btn.innerText || '',
+          btn.textContent || ''
+        ].join(' ')
+      );
+      return /대화\s*프로필|내\s*프로필|chat\s*profile|profile/i.test(label);
+    }) || null;
+  }
+
+  function openUserProfileHubFromRoom() {
+    const direct = findUserProfileHubTrigger();
+    if (direct) {
+      direct.click();
+      return 'direct';
+    }
+
+    const actionPanelButton = qs('[data-testid="action-panel-button"]');
+    if (actionPanelButton) {
+      actionPanelButton.click();
+      return 'action-panel';
+    }
+
+    return null;
   }
 
   async function openCollectionFallback(error, session = {}) {
@@ -2186,7 +2334,6 @@
           null;
 
         const group = qs('[role="group"][aria-label="My chat profiles"]');
-
         if (group) {
           setCollectSession({
             ...session,
@@ -2197,55 +2344,51 @@
           return;
         }
 
-        const trigger = findUserProfileHubTrigger();
-        if (!trigger) {
-          if (!roomUserProfile) {
-            throw new Error('대화방에서 현재 유저 프로필 카드도 찾지 못했어.');
-          }
-
-          const userProfile = {
-            ...roomUserProfile,
-            plotId: session.plotId,
-            roomId: session.roomId,
-            updatedAt: Date.now(),
-          };
-
-          save(CONFIG.STORAGE.USER, userProfile);
-          upsertPlotEntry(session.plotId, {
-            userProfile,
-            rooms: {
-              [session.roomId]: {
-                roomId: session.roomId,
-                lastUsedAt: Date.now(),
-              },
-            },
-          });
-
-          const draft = await buildDraftFromCache({
-            plotId: session.plotId,
-            roomId: session.roomId,
-            messages: Array.isArray(session.messages) ? session.messages : [],
-            character: session.character || getPlotEntry(session.plotId)?.character || null,
-            userProfile,
-            skipAutoCollect: true,
-          });
-          draft.anchor = session.anchor || buildAnchor(draft.messages || []);
-
-          setCollectSession(null);
-          openDraft(draft);
-          flash('유저 프로필 카드 기준으로 수집 완료');
-          return;
+        const openedBy = openUserProfileHubFromRoom();
+        if (!openedBy) {
+          throw new Error('대화 프로필을 여는 버튼을 찾지 못했어.');
         }
 
         setCollectSession({
           ...session,
-          phase: 'wait-user-profile',
+          phase: openedBy === 'action-panel' ? 'wait-action-panel-profile' : 'wait-user-profile',
           roomUserProfile,
           profileOpenAt: Date.now(),
         });
 
         flash('2/3 현재 유저 프로필 여는 중...');
-        trigger.click();
+        return;
+      }
+
+      if (
+        session.phase === 'wait-action-panel-profile' &&
+        /\/rooms\/[^/?#]+/.test(location.pathname) &&
+        getRoomId() === session.roomId
+      ) {
+        const group = qs('[role="group"][aria-label="My chat profiles"]');
+        if (group) {
+          setCollectSession({
+            ...session,
+            phase: 'wait-user-profile',
+            profileOpenAt: Date.now(),
+          });
+          return;
+        }
+
+        const profileAction = findProfileActionInOpenPanel();
+        if (profileAction) {
+          profileAction.click();
+          setCollectSession({
+            ...session,
+            phase: 'wait-user-profile',
+            profileOpenAt: Date.now(),
+          });
+          return;
+        }
+
+        if (Date.now() - Number(session.profileOpenAt || 0) > 3000) {
+          throw new Error('액션 패널에서 대화 프로필 버튼을 찾지 못했어.');
+        }
         return;
       }
 
@@ -2400,24 +2543,77 @@
       <button type="button" data-zs-launch="draft" title="ZETA Snapshot">📷</button>
     `;
 
-    const savedPos = load(CONFIG.STORAGE.LAUNCHER_POS, null);
-    if (savedPos && Number.isFinite(savedPos.left) && Number.isFinite(savedPos.top)) {
-      wrap.style.left = `${savedPos.left}px`;
-      wrap.style.top = `${savedPos.top}px`;
+    const getViewport = () => ({
+      width: window.visualViewport?.width || window.innerWidth,
+      height: window.visualViewport?.height || window.innerHeight,
+    });
+
+    const applySavedPosition = () => {
+      const saved = load(CONFIG.STORAGE.LAUNCHER_POS, null);
+      if (!saved) return;
+
+      const vp = getViewport();
+      const w = wrap.offsetWidth || 50;
+      const h = wrap.offsetHeight || 50;
+      const pad = 8;
+
+      if (!saved.h && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+        const rectLeft = Math.max(pad, Math.min(saved.left, vp.width - w - pad));
+        const rectTop = Math.max(pad, Math.min(saved.top, vp.height - h - pad));
+        const migrated = {
+          h: rectLeft <= (vp.width - (rectLeft + w)) ? 'left' : 'right',
+          hx: Math.round(Math.min(rectLeft, vp.width - (rectLeft + w))),
+          v: rectTop <= (vp.height - (rectTop + h)) ? 'top' : 'bottom',
+          vy: Math.round(Math.min(rectTop, vp.height - (rectTop + h))),
+        };
+        save(CONFIG.STORAGE.LAUNCHER_POS, migrated);
+        return applySavedPosition();
+      }
+
+      wrap.style.left = 'auto';
       wrap.style.right = 'auto';
+      wrap.style.top = 'auto';
       wrap.style.bottom = 'auto';
-    }
+
+      if (saved.h === 'left') wrap.style.left = `${Math.max(pad, saved.hx || pad)}px`;
+      else wrap.style.right = `${Math.max(pad, saved.hx || pad)}px`;
+
+      if (saved.v === 'top') wrap.style.top = `${Math.max(pad, saved.vy || pad)}px`;
+      else wrap.style.bottom = `${Math.max(pad, saved.vy || pad)}px`;
+    };
+
+    const saveCurrentPosition = () => {
+      const vp = getViewport();
+      const rect = wrap.getBoundingClientRect();
+      const left = Math.max(0, rect.left);
+      const right = Math.max(0, vp.width - rect.right);
+      const top = Math.max(0, rect.top);
+      const bottom = Math.max(0, vp.height - rect.bottom);
+
+      save(CONFIG.STORAGE.LAUNCHER_POS, {
+        h: left <= right ? 'left' : 'right',
+        hx: Math.round(Math.min(left, right)),
+        v: top <= bottom ? 'top' : 'bottom',
+        vy: Math.round(Math.min(top, bottom)),
+      });
+    };
+
+    document.body.appendChild(wrap);
+    applySavedPosition();
+    setTimeout(applySavedPosition, 120);
+    setTimeout(applySavedPosition, 650);
 
     const button = qs('[data-zs-launch="draft"]', wrap);
     let drag = null;
     let suppressClick = false;
 
     const clampPosition = (left, top) => {
+      const vp = getViewport();
       const rect = wrap.getBoundingClientRect();
       const pad = 8;
       return {
-        left: Math.max(pad, Math.min(left, window.innerWidth - rect.width - pad)),
-        top: Math.max(pad, Math.min(top, window.innerHeight - rect.height - pad)),
+        left: Math.max(pad, Math.min(left, vp.width - rect.width - pad)),
+        top: Math.max(pad, Math.min(top, vp.height - rect.height - pad)),
       };
     };
 
@@ -2439,7 +2635,7 @@
       if (!drag || e.pointerId !== drag.pointerId) return;
 
       const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
-      if (!drag.moved && distance < 6) return;
+      if (!drag.moved && distance < 12) return;
       drag.moved = true;
 
       e.preventDefault();
@@ -2453,11 +2649,10 @@
     const finishDrag = e => {
       if (!drag || (e.pointerId != null && e.pointerId !== drag.pointerId)) return;
       if (drag.moved) {
-        const rect = wrap.getBoundingClientRect();
-        const next = clampPosition(rect.left, rect.top);
-        save(CONFIG.STORAGE.LAUNCHER_POS, next);
+        saveCurrentPosition();
+        applySavedPosition();
         suppressClick = true;
-        setTimeout(() => { suppressClick = false; }, 0);
+        setTimeout(() => { suppressClick = false; }, 120);
       }
       try { button.releasePointerCapture?.(drag.pointerId); } catch {}
       drag = null;
@@ -2497,16 +2692,9 @@
       })();
     });
 
-    window.addEventListener('resize', () => {
-      if (!wrap.style.left || !wrap.style.top) return;
-      const rect = wrap.getBoundingClientRect();
-      const next = clampPosition(rect.left, rect.top);
-      wrap.style.left = `${next.left}px`;
-      wrap.style.top = `${next.top}px`;
-      save(CONFIG.STORAGE.LAUNCHER_POS, next);
-    });
-
-    document.body.appendChild(wrap);
+    const keepStable = () => applySavedPosition();
+    window.addEventListener('resize', keepStable);
+    window.visualViewport?.addEventListener('resize', keepStable);
   }
 
   function injectStyles() {
@@ -3214,7 +3402,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.6 profile-hub collection + fallback popup + draggable launcher ready');
+    console.log('[ZETA Snapshot] v0.6.7 profile-hub collection + fallback popup + draggable launcher ready');
   }
 
   init();
