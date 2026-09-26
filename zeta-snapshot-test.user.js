@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         ZETA Snapshot Test Prototype
+// @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.0
+// @version      0.6.1
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -184,6 +184,33 @@
     m = location.pathname.match(/\/my-plot-chat-profile\/([^/?#]+)\/[^/?#]+\/edit/);
     if (m) return m[1];
 
+    // 대화방 URL에는 plotId가 없어서 현재 DOM에서 역추적한다.
+    // 캐릭터 채팅 프로필 이미지는 /profile-image/{plotId}/{characterId} 형태다.
+    const profileImg = qsa('img[src*="/profile-image/"], img[srcset*="/profile-image/"]')
+      .map(img => img.currentSrc || img.src || img.getAttribute('srcset') || '')
+      .find(Boolean);
+    m = String(profileImg || '').match(/\/profile-image\/([^/?#]+)\//);
+    if (m) return m[1];
+
+    // 스냅샷 이미지에도 plotId가 첫 경로 세그먼트로 들어간다.
+    const snapshotImg = qsa('img[src*="/chat-snapshot/"], img[srcset*="/chat-snapshot/"]')
+      .map(img => img.currentSrc || img.src || img.getAttribute('srcset') || '')
+      .find(Boolean);
+    m = String(snapshotImg || '').match(/\/chat-snapshot\/([^/?#]+)\//);
+    if (m) return m[1];
+
+    // 프로필 링크가 DOM에 이미 렌더된 경우.
+    const profileLink = qsa('a[href*="/plots/"][href*="/profile"]')
+      .map(a => a.getAttribute('href') || '')
+      .find(Boolean);
+    m = String(profileLink || '').match(/\/plots\/([^/?#]+)\/profile/);
+    if (m) return m[1];
+
+    // 최후 fallback: 현재 DOM 문자열에서 profile-image 경로를 찾는다.
+    const html = document.documentElement?.innerHTML || '';
+    m = html.match(/\/profile-image\/([^/?#"'<>\\]+)\//);
+    if (m) return m[1];
+
     return null;
   }
 
@@ -260,6 +287,10 @@
   }
 
   function collectRecentMessages(limit = CONFIG.MESSAGE_LIMIT) {
+    // 최근 대화는 대화방에서만 수집한다.
+    // 프로필 페이지의 댓글/설명 DOM을 대화로 오인하지 않는다.
+    if (!/\/rooms\/[^/?#]+/.test(location.pathname)) return [];
+
     const rows = [];
     const nodes = qsa([
       '[data-sentry-component="LeftTextContent"]',
@@ -1610,7 +1641,7 @@
         <div id="zs-plot-tabs" class="zs-plot-tabs"></div>
 
         <div class="zs-tools">
-          <button type="button" data-zs-action="load-real">현재 플롯 다시 수집</button>
+          <button type="button" data-zs-action="load-real">현재 방 한번에 수집</button>
           <span class="zs-autosave-badge">자동 저장</span>
         </div>
 
@@ -1729,7 +1760,7 @@
       }
 
       if (action === 'load-real') {
-        state.resultBox.textContent = '자동 수집 중...';
+        state.resultBox.textContent = '대화 + 캐릭터 프로필 + 사용 프로필 자동 수집 중...';
         try {
           return openDraft(await buildDraftFromCache());
         } catch (err) {
@@ -2471,7 +2502,7 @@
     createLauncher();
     watchRoomNavigation();
     setTimeout(restoreSnapshotForCurrentRoom, 900);
-    console.log('[ZETA Snapshot] v0.6.0 MCP write-back ready');
+    console.log('[ZETA Snapshot] v0.6.1 one-click room collection + MCP write-back ready');
   }
 
   init();
