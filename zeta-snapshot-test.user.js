@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.7.1
+// @version      0.7.2
 // @description  ZETA Snapshot collector + ChatGPT bridge + automatic result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -10,7 +10,7 @@
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @connect      image.zeta-ai.io
-// @connect      zeta-snapshot.kwillhs.workers.dev
+// @connect      zeta-snapshot.softbridge.workers.dev
 // @connect      files.oaiusercontent.com
 // @connect      *.oaiusercontent.com
 // @connect      cdn.openai.com
@@ -23,7 +23,7 @@
   const IS_ZETA_HOST = /(^|\.)zeta-ai\.io$/i.test(location.hostname);
 
   const CONFIG = {
-    RELAY_BASE: 'https://zeta-snapshot.kwillhs.workers.dev',
+    RELAY_BASE: 'https://zeta-snapshot.softbridge.workers.dev',
     MESSAGE_LIMIT: 12,
     STORAGE: {
       CHARACTER: 'zetaSnapshot.characterCache.v1',
@@ -3841,7 +3841,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.7.1 white UI + ChatGPT auto-submit bridge + automatic result write-back ready');
+    console.log('[ZETA Snapshot] v0.7.2 softbridge endpoint + white UI + ChatGPT auto-submit bridge ready');
   }
 
   init();
