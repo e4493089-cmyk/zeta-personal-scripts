@@ -1022,39 +1022,6 @@
     return data?.snapshot || data;
   }
 
-  async function fetchSnapshotStatusFromRelay(token) {
-    const res = await fetch(
-      `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}/status`,
-      { method: 'GET' }
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data?.error || `상태 조회 실패: ${res.status}`);
-    }
-    return data;
-  }
-
-  async function uploadResultFileToRelay(token, file) {
-    if (!file) throw new Error('업로드할 이미지가 없어.');
-    const mime = file.type || 'image/png';
-    const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-    if (!allowed.has(mime)) throw new Error('PNG/JPEG/WEBP/GIF만 업로드할 수 있어.');
-
-    const res = await fetch(
-      `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}/result`,
-      {
-        method: 'PUT',
-        headers: { 'Content-Type': mime },
-        body: file,
-      }
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data?.error || `결과 업로드 실패: ${res.status}`);
-    }
-    return data;
-  }
-
   function findAnchorElement(anchor) {
     const preview = cleanText(anchor?.preview || '');
     const nodes = qsa([
