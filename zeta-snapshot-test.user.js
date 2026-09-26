@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.7.3
+// @version      0.7.4
 // @description  ZETA Snapshot collector + ChatGPT bridge + automatic result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -1268,13 +1268,13 @@
     return card;
   }
 
-  function buildChatGPTPrompt(snapshotUrl) {
+  function buildChatGPTPrompt(snapshotToken) {
     return [
-      '[@ZETA Snapshot Generator](plugin://zeta-snapshot-generator@created-by-me-remote)',
+      '@ZETA Snapshot Generator',
       '이 스냅샷을 불러와서 포함된 캐릭터/유저 프로필, 최근 장면, 저장된 스타일을 반영해 이미지를 생성해줘.',
       '참조 이미지가 있으면 같이 사용해.',
       '이미지 생성이 끝나면 가능한 경우 같은 스냅샷에 결과를 저장해.',
-      snapshotUrl || ''
+      `snapshot token: ${snapshotToken || ''}`
     ].filter(Boolean).join('\n');
   }
 
@@ -1315,14 +1315,12 @@
   }
 
   function buildChatGPTHandoffUrl(info = {}) {
-    const snapshotUrl =
-      info.snapshotUrl ||
-      (info.token ? `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(info.token)}` : '');
-    if (!snapshotUrl || !info.token) return '';
+    const token = String(info.token || '').trim();
+    if (!token) return '';
 
     const url = new URL('https://chatgpt.com/');
-    url.searchParams.set('prompt', buildChatGPTPrompt(snapshotUrl));
-    url.searchParams.set('zeta_snapshot', info.token);
+    url.searchParams.set('prompt', buildChatGPTPrompt(token));
+    url.searchParams.set('zeta_snapshot', token);
     return url.toString();
   }
 
@@ -1354,23 +1352,44 @@
     badge.style.color = tone === 'error' ? '#b91c1c' : tone === 'success' ? '#047857' : '#111827';
   }
 
-  function setChatGPTComposerText(prompt) {
-    if (!prompt) return false;
-    const composer =
-      document.querySelector('#prompt-textarea') ||
-      document.querySelector('textarea[name="prompt-textarea"]') ||
-      document.querySelector('main [contenteditable="true"][data-placeholder]');
+  function getChatGPTComposer() {
+    const selectors = [
+      '#prompt-textarea',
+      'textarea[name="prompt-textarea"]',
+      'main textarea',
+      'main [contenteditable="true"][role="textbox"]',
+      'main [contenteditable="true"][data-placeholder]',
+      'form [contenteditable="true"]'
+    ];
 
-    if (!composer) return false;
+    const candidates = selectors.flatMap(selector => [...document.querySelectorAll(selector)]);
+    return candidates.find(node => {
+      const rect = node.getBoundingClientRect?.();
+      return rect && rect.width > 80 && rect.height > 20;
+    }) || candidates[0] || null;
+  }
 
-    const current = String(
+  function readChatGPTComposerText(composer = getChatGPTComposer()) {
+    if (!composer) return '';
+    return String(
       composer.value ??
       composer.innerText ??
       composer.textContent ??
       ''
-    ).trim();
+    ).replace(/\u00a0/g, ' ').trim();
+  }
 
-    if (current) return current.includes('ZETA Snapshot Generator') || current.includes('/snapshots/');
+  function setChatGPTComposerText(prompt) {
+    if (!prompt) return false;
+    const composer = getChatGPTComposer();
+    if (!composer) return false;
+
+    const current = readChatGPTComposerText(composer);
+    if (current) {
+      return current.includes('ZETA Snapshot Generator') ||
+        current.includes('snapshot token:') ||
+        current.includes('/snapshots/');
+    }
 
     composer.focus();
 
@@ -1381,21 +1400,117 @@
       const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
       setter?.call(composer, prompt);
       composer.dispatchEvent(new Event('input', { bubbles: true }));
+      composer.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
     }
 
     try {
-      document.execCommand('selectAll', false);
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(composer);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
       document.execCommand('insertText', false, prompt);
     } catch {
       composer.textContent = prompt;
     }
+
     composer.dispatchEvent(new InputEvent('input', {
       bubbles: true,
       inputType: 'insertText',
       data: prompt
     }));
+    composer.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
+  }
+
+  function findChatGPTSendButton(composer = getChatGPTComposer()) {
+    const scopes = [
+      composer?.closest('form'),
+      composer?.closest('[data-type="unified-composer"]'),
+      composer?.parentElement?.parentElement,
+      document
+    ].filter(Boolean);
+
+    const selectors = [
+      'button[data-testid="send-button"]',
+      'button[data-testid="composer-submit-button"]',
+      'button[type="submit"]',
+      'button[aria-label="Send prompt"]',
+      'button[aria-label="Send message"]',
+      'button[aria-label="메시지 보내기"]',
+      'button[aria-label="전송"]',
+      'button[aria-label*="Send" i]',
+      'button[aria-label*="보내기"]'
+    ];
+
+    for (const scope of scopes) {
+      for (const selector of selectors) {
+        const buttons = [...scope.querySelectorAll(selector)];
+        const button = buttons.find(btn => {
+          const rect = btn.getBoundingClientRect?.();
+          const style = getComputedStyle(btn);
+          return rect && rect.width > 20 && rect.height > 20 &&
+            style.display !== 'none' && style.visibility !== 'hidden' &&
+            !btn.disabled && btn.getAttribute('aria-disabled') !== 'true';
+        });
+        if (button) return button;
+      }
+    }
+
+    return null;
+  }
+
+  function submitChatGPTPrompt(token) {
+    const composer = getChatGPTComposer();
+    const text = readChatGPTComposerText(composer);
+
+    if (!composer || !text) return false;
+    if (
+      token &&
+      !text.includes(token) &&
+      !text.includes('ZETA Snapshot Generator') &&
+      !text.includes('/snapshots/')
+    ) {
+      return false;
+    }
+
+    const sendButton = findChatGPTSendButton(composer);
+    if (sendButton) {
+      sendButton.click();
+      return true;
+    }
+
+    const form = composer.closest?.('form');
+    if (form?.requestSubmit) {
+      try {
+        form.requestSubmit();
+        return true;
+      } catch {}
+    }
+
+    try {
+      composer.focus();
+      composer.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      }));
+      composer.dispatchEvent(new KeyboardEvent('keyup', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true
+      }));
+      return true;
+    } catch {}
+
+    return false;
   }
 
   function gmFetchBlob(url) {
@@ -1504,46 +1619,44 @@
     const submittedKey = `zetaSnapshot.submitted.${token}`;
     const composerTimer = setInterval(() => {
       composerAttempts += 1;
-      const prepared = setChatGPTComposerText(prompt);
 
-      if (!prepared && composerAttempts < 30) return;
+      const preparedByScript = setChatGPTComposerText(prompt);
+      const composer = getChatGPTComposer();
+      const currentText = readChatGPTComposerText(composer);
+      const alreadyPrepared =
+        currentText.includes(token) ||
+        currentText.includes('ZETA Snapshot Generator') ||
+        currentText.includes('/snapshots/');
+      const prepared = preparedByScript || alreadyPrepared;
 
-      clearInterval(composerTimer);
+      if (!prepared && composerAttempts < 40) return;
 
       if (!prepared) {
-        showChatGPTBridgeBadge('ZETA Snapshot 연결됨 · 요청문 자동 입력에 실패했어.', 'error');
+        clearInterval(composerTimer);
+        showChatGPTBridgeBadge('ZETA 요청문을 찾지 못했어 · 입력창을 다시 열어줘.', 'error');
         return;
       }
 
-      showChatGPTBridgeBadge('ZETA 요청문 준비됨 · 자동 전송 대기 중');
+      if (sessionStorage.getItem(submittedKey) === '1') {
+        clearInterval(composerTimer);
+        return;
+      }
 
-      if (sessionStorage.getItem(submittedKey) === '1') return;
+      showChatGPTBridgeBadge('ZETA 요청문 준비됨 · 자동 전송 시도 중');
 
-      let sendAttempts = 0;
-      const sendTimer = setInterval(() => {
-        sendAttempts += 1;
+      const submitted = submitChatGPTPrompt(token);
+      if (submitted) {
+        clearInterval(composerTimer);
+        sessionStorage.setItem(submittedKey, '1');
+        showChatGPTBridgeBadge('ZETA 요청 자동 전송 완료');
+        return;
+      }
 
-        const sendButton =
-          document.querySelector('button[data-testid="send-button"]') ||
-          document.querySelector('button[aria-label="Send prompt"]') ||
-          document.querySelector('button[aria-label="Send message"]') ||
-          document.querySelector('button[aria-label="메시지 보내기"]') ||
-          document.querySelector('button[aria-label="전송"]');
-
-        if (sendButton && !sendButton.disabled && sendButton.getAttribute('aria-disabled') !== 'true') {
-          clearInterval(sendTimer);
-          sessionStorage.setItem(submittedKey, '1');
-          showChatGPTBridgeBadge('ZETA 요청 자동 전송 중');
-          sendButton.click();
-          return;
-        }
-
-        if (sendAttempts >= 25) {
-          clearInterval(sendTimer);
-          showChatGPTBridgeBadge('자동 전송 버튼을 못 찾았어 · 전송만 한 번 눌러줘.', 'error');
-        }
-      }, 300);
-    }, 400);
+      if (composerAttempts >= 40) {
+        clearInterval(composerTimer);
+        showChatGPTBridgeBadge('자동 전송 버튼을 못 찾았어 · 전송만 한 번 눌러줘.', 'error');
+      }
+    }, 350);
 
     const uploadedKey = `zetaSnapshot.uploaded.${token}`;
     if (sessionStorage.getItem(uploadedKey) === '1') {
@@ -1614,10 +1727,7 @@
       return false;
     }
 
-    const snapshotUrl =
-      info.snapshotUrl ||
-      `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(info.token)}`;
-    const prompt = buildChatGPTPrompt(snapshotUrl);
+    const prompt = buildChatGPTPrompt(info.token);
 
     try {
       await copyText(prompt);
@@ -3841,7 +3951,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.7.3 white tab contrast fix + softbridge endpoint ready');
+    console.log('[ZETA Snapshot] v0.7.4 token handoff + resilient ChatGPT auto-submit ready');
   }
 
   init();
