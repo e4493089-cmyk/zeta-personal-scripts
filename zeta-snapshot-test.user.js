@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot Test Prototype
 // @namespace    zeta-snapshot-test
-// @version      0.2.0
+// @version      0.3.0
 // @description  ZETA Snapshot collector/review/send prototype
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -397,48 +397,130 @@
     );
     const plotSummary = cleanText(basic?.querySelector('p.heading3')?.textContent || '');
 
-    const longRoot = doc.querySelector('[data-sentry-component="PlotLongDescription"]');
-    const charImg =
-      longRoot?.querySelector('img[alt^="Profile image of "]') ||
-      doc.querySelector('img[alt^="Profile image of "]');
-
-    let name = '';
-    if (charImg) {
-      name = cleanText((charImg.getAttribute('alt') || '').replace(/^Profile image of\s*/i, ''));
-      if (!name) {
-        name = cleanText(charImg.closest('button')?.querySelector('.heading2')?.textContent || '');
-      }
+    let jsonLdCharacters = [];
+    for (const script of doc.querySelectorAll('script[type="application/ld+json"]')) {
+      try {
+        const data = JSON.parse(script.textContent || '{}');
+        if (Array.isArray(data?.character)) {
+          jsonLdCharacters = data.character
+            .filter(item => item && typeof item === 'object')
+            .map(item => ({
+              name: cleanText(item.name || ''),
+              imageUrl: stripImageTransform(item.image || ''),
+            }));
+          if (jsonLdCharacters.length) break;
+        }
+      } catch {}
     }
 
-    if (!name) {
-      name = cleanText(
-        doc.querySelector('[data-sentry-component="StaticIntroMessage"] .caption1')?.textContent ||
+    const boxes = [...doc.querySelectorAll('[data-sentry-component="PlotCharacterAbout"]')];
+    let characters = boxes.map((box, index) => {
+      const img = box.querySelector('img[alt^="Profile image of "]');
+      const altName = cleanText(
+        (img?.getAttribute('alt') || '').replace(/^Profile image of\s*/i, '')
+      );
+      const name = cleanText(
+        box.querySelector('.heading2')?.textContent ||
+        altName ||
         ''
       );
+      const description = String(
+        box.querySelector('.body1')?.innerText ||
+        box.querySelector('.body1')?.textContent ||
+        ''
+      ).trim();
+      const imageUrl = img ? imageUrlFromImg(img) : '';
+      return {
+        id: `${plotId}:character:${index + 1}`,
+        slotId: `${plotId}:character:${index + 1}`,
+        kind: 'character',
+        name: name || `캐릭터 ${index + 1}`,
+        description,
+        imageUrl: /\/profile-image\//.test(imageUrl) ? imageUrl : '',
+        primary: index === 0,
+        source: 'plot-character-about',
+      };
+    });
+
+    if (!characters.length && jsonLdCharacters.length) {
+      characters = jsonLdCharacters.map((item, index) => ({
+        id: `${plotId}:character:${index + 1}`,
+        slotId: `${plotId}:character:${index + 1}`,
+        kind: 'character',
+        name: item.name || `캐릭터 ${index + 1}`,
+        description: '',
+        imageUrl: /\/profile-image\//.test(item.imageUrl) ? item.imageUrl : '',
+        primary: index === 0,
+        source: 'json-ld',
+      }));
     }
 
-    const imageUrl = charImg ? imageUrlFromImg(charImg) : '';
+    if (!characters.length) {
+      const longRoot = doc.querySelector('[data-sentry-component="PlotLongDescription"]');
+      const charImg =
+        longRoot?.querySelector('img[alt^="Profile image of "]') ||
+        doc.querySelector('img[alt^="Profile image of "]');
 
-    let description = '';
-    if (longRoot) {
-      const clone = longRoot.cloneNode(true);
-      clone.querySelectorAll('button, h1, h2, h3, img, svg').forEach(el => el.remove());
-      description = cleanText(clone.textContent || '');
-      description = description.replace(/^캐릭터\s*/i, '').trim();
-      if (name && description.startsWith(name)) {
-        description = description.slice(name.length).trim();
+      let name = '';
+      if (charImg) {
+        name = cleanText((charImg.getAttribute('alt') || '').replace(/^Profile image of\s*/i, ''));
+        if (!name) {
+          name = cleanText(charImg.closest('button')?.querySelector('.heading2')?.textContent || '');
+        }
       }
-      if (!description || description === '.' || description === name) {
-        description = '';
+
+      if (!name) {
+        name = cleanText(
+          doc.querySelector('[data-sentry-component="StaticIntroMessage"] .caption1')?.textContent ||
+          ''
+        );
+      }
+
+      const imageUrl = charImg ? imageUrlFromImg(charImg) : '';
+      let description = '';
+
+      if (longRoot) {
+        const clone = longRoot.cloneNode(true);
+        clone.querySelectorAll('button, h1, h2, h3, img, svg').forEach(el => el.remove());
+        description = cleanText(clone.textContent || '');
+        description = description.replace(/^캐릭터\s*/i, '').trim();
+        if (name && description.startsWith(name)) {
+          description = description.slice(name.length).trim();
+        }
+        if (!description || description === '.' || description === name) {
+          description = '';
+        }
+      }
+
+      characters = [{
+        id: `${plotId}:character:1`,
+        slotId: `${plotId}:character:1`,
+        kind: 'character',
+        name: name || plotTitle || '캐릭터',
+        description,
+        imageUrl: /\/profile-image\//.test(imageUrl) ? imageUrl : '',
+        primary: true,
+        source: 'plot-profile-page',
+      }];
+    }
+
+    for (const item of jsonLdCharacters) {
+      const target = characters.find(c => c.name === item.name);
+      if (target && !target.imageUrl && /\/profile-image\//.test(item.imageUrl)) {
+        target.imageUrl = item.imageUrl;
       }
     }
+
+    const primary = characters.find(c => c.primary) || characters[0];
 
     return {
       id: plotId,
-      kind: 'character',
-      name: name || plotTitle || '캐릭터',
-      description,
-      imageUrl: /\/profile-image\//.test(imageUrl) ? imageUrl : '',
+      plotId,
+      kind: characters.length > 1 ? 'character_group' : 'character',
+      name: primary?.name || plotTitle || '캐릭터',
+      description: primary?.description || '',
+      imageUrl: primary?.imageUrl || '',
+      characters,
       plotTitle,
       plotSummary,
       source: 'plot-profile-page',
@@ -520,7 +602,45 @@
       .map(m => m.text)
       .join('\n');
 
+    const sceneText = messages.map(m => m.text).join('\n');
     const userText = '';
+
+    let characters = Array.isArray(character?.characters) && character.characters.length
+      ? character.characters
+      : [character];
+
+    characters = characters.map((item, index) => {
+      const mentioned = !!item.name && sceneText.includes(item.name);
+      return {
+        ...item,
+        slotId: item.slotId || item.id || `${plotId || 'plot'}:character:${index + 1}`,
+        primary: item.primary ?? (index === 0),
+        included: item.included ?? (index === 0 || mentioned),
+        appearancePrompt:
+          item.manualAppearancePrompt ||
+          item.appearancePrompt ||
+          buildAutoAppearance(item, characterText, `캐릭터 ${item.name || index + 1}`),
+      };
+    });
+
+    if (!characters.some(item => item.primary) && characters[0]) {
+      characters[0].primary = true;
+    }
+
+    const primaryCharacter =
+      characters.find(item => item.primary) ||
+      characters.find(item => item.included) ||
+      characters[0] ||
+      character;
+
+    const characterGroup = {
+      ...character,
+      name: primaryCharacter?.name || character?.name || '캐릭터',
+      description: primaryCharacter?.description || '',
+      imageUrl: primaryCharacter?.imageUrl || '',
+      appearancePrompt: primaryCharacter?.appearancePrompt || '',
+      characters,
+    };
 
     return {
       source: 'auto',
@@ -529,12 +649,8 @@
       messages,
       stylePreset: global.stylePreset || '2d',
       additionalInstructions: global.additionalInstructions || CONFIG.DEFAULT_INSTRUCTIONS,
-      character: {
-        ...character,
-        appearancePrompt:
-          character.manualAppearancePrompt ||
-          buildAutoAppearance(character, characterText, '캐릭터'),
-      },
+      character: characterGroup,
+      characters,
       userProfile: {
         ...userProfile,
         appearancePrompt:
@@ -598,8 +714,22 @@
       additionalInstructions: CONFIG.DEFAULT_INSTRUCTIONS,
       character: {
         ...character,
+        characters: [{
+          ...character,
+          slotId: character.id,
+          primary: true,
+          included: true,
+          appearancePrompt: buildAutoAppearance(character, recentText, '캐릭터'),
+        }],
         appearancePrompt: buildAutoAppearance(character, recentText, '캐릭터'),
       },
+      characters: [{
+        ...character,
+        slotId: character.id,
+        primary: true,
+        included: true,
+        appearancePrompt: buildAutoAppearance(character, recentText, '캐릭터'),
+      }],
       userProfile: {
         ...baseUser,
         appearancePrompt: buildAutoAppearance(baseUser, recentText, '유저'),
