@@ -3041,7 +3041,7 @@
         border:1px solid #d1d5db;
         border-radius:16px;
         background:#ffffff;
-        color:#fff;
+        color:#111827;
         box-shadow:0 10px 28px rgba(17,24,39,.14);
         font-size:21px;
         transition:.16s ease;
