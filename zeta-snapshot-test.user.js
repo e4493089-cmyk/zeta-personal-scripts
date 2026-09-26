@@ -1269,11 +1269,14 @@
     qs('#zs-style').value = draft.stylePreset || '2d';
     qs('#zs-room').value = draft.roomId || '';
 
-    qs('#zs-char-name').value = draft.character.name || '';
-    qs('#zs-char-desc').value = draft.character.description || '';
-    qs('#zs-char-appearance').value = draft.character.appearancePrompt || '';
-    qs('#zs-char-image').value = draft.character.imageUrl || '';
-    qs('#zs-char-preview').src = draft.character.imageUrl || '';
+    const characters =
+      Array.isArray(draft.characters) && draft.characters.length
+        ? draft.characters
+        : (Array.isArray(draft.character?.characters) && draft.character.characters.length
+            ? draft.character.characters
+            : [draft.character].filter(Boolean));
+
+    renderCharacterSlots(characters);
 
     qs('#zs-user-name').value = draft.userProfile.name || '';
     qs('#zs-user-desc').value = draft.userProfile.description || '';
@@ -1292,6 +1295,15 @@
   function readFormToDraft() {
     const messages = state.currentDraft?.messages || collectRecentMessages();
     const anchor = state.currentDraft?.anchor || buildAnchor(messages);
+    const characters = readCharacterSlots();
+
+    const primaryCharacter =
+      characters.find(item => item.primary) ||
+      characters.find(item => item.included) ||
+      characters[0] ||
+      {};
+
+    const previousGroup = state.currentDraft?.character || {};
 
     return {
       source: state.currentDraft?.source || 'form',
@@ -1300,13 +1312,18 @@
       messages,
       stylePreset: qs('#zs-style').value,
       additionalInstructions: qs('#zs-extra').value.trim(),
+      characters,
       character: {
-        ...(state.currentDraft?.character || {}),
-        name: qs('#zs-char-name').value.trim(),
-        description: qs('#zs-char-desc').value.trim(),
-        imageUrl: qs('#zs-char-image').value.trim(),
-        appearancePrompt: qs('#zs-char-appearance').value.trim(),
-        manualAppearancePrompt: qs('#zs-char-appearance').value.trim(),
+        ...previousGroup,
+        id: previousGroup.id || previousGroup.plotId || getPlotIdFromUrl() || null,
+        plotId: previousGroup.plotId || previousGroup.id || getPlotIdFromUrl() || null,
+        kind: characters.length > 1 ? 'character_group' : 'character',
+        name: primaryCharacter.name || '',
+        description: primaryCharacter.description || '',
+        imageUrl: primaryCharacter.imageUrl || '',
+        appearancePrompt: primaryCharacter.appearancePrompt || '',
+        manualAppearancePrompt: primaryCharacter.appearancePrompt || '',
+        characters,
       },
       userProfile: {
         ...(state.currentDraft?.userProfile || {}),
@@ -1328,6 +1345,7 @@
     save(CONFIG.STORAGE.CHARACTER, {
       ...(load(CONFIG.STORAGE.CHARACTER, {}) || {}),
       ...draft.character,
+      characters: draft.characters || draft.character?.characters || [],
       updatedAt: Date.now(),
     });
 
@@ -1359,7 +1377,8 @@
       try {
         if (type === 'character') {
           const profile = collectCharacterProfileFromCurrentPage();
-          flash(`캐릭터 저장: ${profile.name}`);
+          const count = Array.isArray(profile.characters) ? profile.characters.length : 1;
+          flash(`캐릭터 저장: ${count}명`);
           return;
         }
 
