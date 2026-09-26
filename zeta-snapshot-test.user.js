@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.1
+// @version      0.6.2
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -23,6 +23,7 @@
       GLOBAL: 'zetaSnapshot.globalSettings.v1',
       PLOTS: 'zetaSnapshot.plots.v1',
       SNAPSHOTS: 'zetaSnapshot.roomSnapshots.v1',
+      COLLECT_SESSION: 'zetaSnapshot.collectSession.v1',
       CLIENT_ID: 'zetaSnapshot.clientId.v1',
     },
     DEFAULT_INSTRUCTIONS: [
@@ -56,6 +57,7 @@
     autosaveTimer: null,
     roomPollTimers: new Map(),
     lastObservedRoomId: null,
+    collectResumeBusy: false,
   };
 
   function qs(sel, root = document) { return root.querySelector(sel); }
@@ -184,33 +186,9 @@
     m = location.pathname.match(/\/my-plot-chat-profile\/([^/?#]+)\/[^/?#]+\/edit/);
     if (m) return m[1];
 
-    // 대화방 URL에는 plotId가 없어서 현재 DOM에서 역추적한다.
-    // 캐릭터 채팅 프로필 이미지는 /profile-image/{plotId}/{characterId} 형태다.
-    const profileImg = qsa('img[src*="/profile-image/"], img[srcset*="/profile-image/"]')
-      .map(img => img.currentSrc || img.src || img.getAttribute('srcset') || '')
-      .find(Boolean);
-    m = String(profileImg || '').match(/\/profile-image\/([^/?#]+)\//);
-    if (m) return m[1];
-
-    // 스냅샷 이미지에도 plotId가 첫 경로 세그먼트로 들어간다.
-    const snapshotImg = qsa('img[src*="/chat-snapshot/"], img[srcset*="/chat-snapshot/"]')
-      .map(img => img.currentSrc || img.src || img.getAttribute('srcset') || '')
-      .find(Boolean);
-    m = String(snapshotImg || '').match(/\/chat-snapshot\/([^/?#]+)\//);
-    if (m) return m[1];
-
-    // 프로필 링크가 DOM에 이미 렌더된 경우.
-    const profileLink = qsa('a[href*="/plots/"][href*="/profile"]')
-      .map(a => a.getAttribute('href') || '')
-      .find(Boolean);
-    m = String(profileLink || '').match(/\/plots\/([^/?#]+)\/profile/);
-    if (m) return m[1];
-
-    // 최후 fallback: 현재 DOM 문자열에서 profile-image 경로를 찾는다.
-    const html = document.documentElement?.innerHTML || '';
-    m = html.match(/\/profile-image\/([^/?#"'<>\\]+)\//);
-    if (m) return m[1];
-
+    // /rooms/:roomId 자체에는 plotId가 없다.
+    // 대화방에서는 헤더의 "Open plot profile" 버튼을 자동으로 눌러
+    // 실제 프로필 URL로 이동한 뒤 plotId를 얻는다.
     return null;
   }
 
@@ -713,7 +691,7 @@
     return profile;
   }
 
-  async function buildDraftFromCache() {
+  async function buildDraftFromCache(overrides = {}) {
     const legacyCharacter = load(CONFIG.STORAGE.CHARACTER, {
       id: null,
       kind: 'character',
@@ -730,8 +708,9 @@
       imageUrl: '',
     });
 
-    const roomId = getRoomId();
+    const roomId = overrides.roomId || getRoomId();
     const plotId =
+      overrides.plotId ||
       getPlotIdFromUrl() ||
       state.activePlotId ||
       legacyCharacter?.plotId ||
@@ -761,7 +740,9 @@
 
     const global = load(CONFIG.STORAGE.GLOBAL, {});
     const refreshedEntry = getPlotEntry(plotId) || plotEntry || {};
-    const messages = collectRecentMessages();
+    const messages = Array.isArray(overrides.messages)
+      ? overrides.messages
+      : collectRecentMessages();
 
     const characterText = messages
       .filter(m => m.speaker === 'character')
@@ -1762,6 +1743,11 @@
       if (action === 'load-real') {
         state.resultBox.textContent = '대화 + 캐릭터 프로필 + 사용 프로필 자동 수집 중...';
         try {
+          if (/\/rooms\/[^/?#]+/.test(location.pathname)) {
+            closeModal();
+            await startFullCollectionFromRoom();
+            return;
+          }
           return openDraft(await buildDraftFromCache());
         } catch (err) {
           state.resultBox.textContent = `자동 수집 오류:\n${String(err.message || err)}`;
@@ -1959,6 +1945,123 @@
     };
   }
 
+
+  function getCollectSession() {
+    return load(CONFIG.STORAGE.COLLECT_SESSION, null);
+  }
+
+  function setCollectSession(session) {
+    if (!session) {
+      localStorage.removeItem(CONFIG.STORAGE.COLLECT_SESSION);
+      return null;
+    }
+    save(CONFIG.STORAGE.COLLECT_SESSION, session);
+    return session;
+  }
+
+  async function startFullCollectionFromRoom() {
+    if (!/\/rooms\/[^/?#]+/.test(location.pathname)) {
+      throw new Error('대화방에서 📷를 눌러줘.');
+    }
+
+    const roomId = getRoomId();
+    const messages = collectRecentMessages();
+    const profileButton = qs('button[data-testid="chat-header-profile"][aria-label="Open plot profile"]');
+
+    if (!profileButton) {
+      throw new Error('캐릭터 프로필 이동 버튼을 찾지 못했어.');
+    }
+
+    setCollectSession({
+      phase: 'open-profile',
+      roomId,
+      roomUrl: location.href,
+      messages,
+      anchor: buildAnchor(messages),
+      startedAt: Date.now(),
+    });
+
+    flash('캐릭터 프로필 자동 수집 중...');
+    profileButton.click();
+  }
+
+  async function resumeCollectSession() {
+    if (state.collectResumeBusy) return;
+
+    const session = getCollectSession();
+    if (!session) return;
+
+    // 오래된 세션은 버린다.
+    if (Date.now() - Number(session.startedAt || 0) > 2 * 60 * 1000) {
+      setCollectSession(null);
+      return;
+    }
+
+    state.collectResumeBusy = true;
+    try {
+      if (
+        session.phase === 'open-profile' &&
+        /\/plots\/[^/?#]+\/profile/.test(location.pathname)
+      ) {
+        const plotId = getPlotIdFromUrl();
+        if (!plotId) throw new Error('프로필 페이지에서 plotId를 찾지 못했어.');
+
+        // 실제 프로필 페이지 DOM에서 캐릭터 정보 수집.
+        collectCharacterProfileFromCurrentPage();
+
+        // plotId를 얻었으니 현재 방의 사용 프로필 편집 페이지도 자동 요청.
+        await collectCurrentUserProfileFromEditPage(plotId, session.roomId);
+
+        const draft = await buildDraftFromCache({
+          plotId,
+          roomId: session.roomId,
+          messages: Array.isArray(session.messages) ? session.messages : [],
+        });
+
+        draft.anchor = session.anchor || buildAnchor(draft.messages || []);
+
+        setCollectSession({
+          ...session,
+          phase: 'return-room',
+          plotId,
+          draft,
+        });
+
+        flash('프로필 수집 완료 · 대화방으로 돌아가는 중...');
+        location.href = session.roomUrl;
+        return;
+      }
+
+      if (
+        session.phase === 'return-room' &&
+        /\/rooms\/[^/?#]+/.test(location.pathname) &&
+        getRoomId() === session.roomId
+      ) {
+        const draft = session.draft;
+        setCollectSession(null);
+
+        if (!draft) throw new Error('수집된 Draft가 없어.');
+
+        setTimeout(() => {
+          openDraft(draft);
+          flash('대화 + 캐릭터 프로필 + 사용 프로필 수집 완료');
+        }, 350);
+      }
+    } catch (err) {
+      console.error('[ZETA Snapshot] full collection failed', err);
+      setCollectSession(null);
+
+      if (session.roomUrl && location.href !== session.roomUrl) {
+        alert(`자동 수집 실패: ${String(err.message || err)}\n대화방으로 돌아갈게.`);
+        location.href = session.roomUrl;
+      } else {
+        alert(`자동 수집 실패: ${String(err.message || err)}`);
+      }
+    } finally {
+      state.collectResumeBusy = false;
+    }
+  }
+
   function persistFromDraft(draft) {
     save(CONFIG.STORAGE.GLOBAL, {
       stylePreset: draft.stylePreset,
@@ -2026,7 +2129,11 @@
 
       (async () => {
         try {
-          flash('프로필 수집 중...');
+          if (/\/rooms\/[^/?#]+/.test(location.pathname)) {
+            await startFullCollectionFromRoom();
+            return;
+          }
+
           openDraft(await buildDraftFromCache());
           flash('수집 완료');
         } catch (err) {
@@ -2501,8 +2608,18 @@
     injectStyles();
     createLauncher();
     watchRoomNavigation();
-    setTimeout(restoreSnapshotForCurrentRoom, 900);
-    console.log('[ZETA Snapshot] v0.6.1 one-click room collection + MCP write-back ready');
+
+    // 프로필 이동이 SPA 전환이어도 이어서 수집되도록 감시.
+    setInterval(() => {
+      resumeCollectSession().catch(err => console.warn('[ZETA Snapshot] resume collection failed', err));
+    }, 500);
+
+    setTimeout(() => {
+      resumeCollectSession().catch(err => console.warn('[ZETA Snapshot] initial collection resume failed', err));
+      restoreSnapshotForCurrentRoom();
+    }, 700);
+
+    console.log('[ZETA Snapshot] v0.6.2 cross-page one-click collection + MCP write-back ready');
   }
 
   init();
