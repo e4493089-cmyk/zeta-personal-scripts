@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.7.5
+// @version      0.7.6
 // @description  ZETA Snapshot collector + ChatGPT bridge + automatic result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -1230,6 +1230,51 @@
     state.inlineMountTimers.set(key, timer);
   }
 
+  function getPendingInlineCardId(roomId) {
+    const safeRoom = String(roomId || 'room').replace(/[^a-zA-Z0-9_-]/g, '_');
+    return `zs-inline-pending-${safeRoom}`;
+  }
+
+  function renderInlineCreatingCard(roomId, draft = {}, stateName = 'creating', detail = '') {
+    if (!roomId || roomId === 'manual-room') return null;
+
+    const id = getPendingInlineCardId(roomId);
+    let card = document.getElementById(id);
+    if (!card) {
+      card = document.createElement('section');
+      card.id = id;
+      card.className = 'zs-inline-card zs-inline-progress-card';
+      card.dataset.zsRoomId = roomId;
+      document.body.appendChild(card);
+    }
+
+    const isError = stateName === 'failed';
+    card.innerHTML = `
+      <div class="zs-inline-progress-body ${isError ? 'is-error' : ''}">
+        <div class="zs-inline-spinner" aria-hidden="true"></div>
+        <div class="zs-inline-progress-emoji">${isError ? '⚠️' : '📸✨'}</div>
+        <strong>${isError ? '스냅샷 연결에 실패했어요' : '잊지 못할 순간을 만들고 있어요!'}</strong>
+        <div class="zs-inline-progress-copy">
+          ${isError
+            ? cleanText(detail || '스냅샷 서버 연결을 확인한 뒤 다시 시도해줘.')
+            : '스냅샷 생성과 이미지 작업을 진행 중이에요.<br>완료되면 이 자리에 결과 이미지가 표시돼요.'}
+        </div>
+      </div>
+    `;
+
+    const info = { anchor: draft.anchor || null };
+    if (!placeInlineCard(card, info, true)) {
+      card.classList.add('zs-inline-floating');
+      card.style.display = '';
+    }
+    return card;
+  }
+
+  function removeInlineCreatingCard(roomId) {
+    if (!roomId || roomId === 'manual-room') return;
+    document.getElementById(getPendingInlineCardId(roomId))?.remove();
+  }
+
   function ensureInlineCard(roomId, info = {}) {
     if (!roomId || roomId === 'manual-room' || !info?.token) return null;
     const id = getInlineCardId(roomId, info.token);
@@ -1270,8 +1315,9 @@
 
   function buildChatGPTPrompt(snapshotToken) {
     return [
-      '@ZETA Snapshot Generator',
-      '이 스냅샷을 불러와서 포함된 캐릭터/유저 프로필, 최근 장면, 저장된 스타일을 반영해 이미지를 생성해줘.',
+      '[@ZETA Snapshot Generator](plugin://zeta-snapshot-generator@created-by-me-remote)',
+      '연결된 ZETA Snapshot Generator 플러그인의 get_snapshot 도구로 아래 snapshot token을 조회해.',
+      '포함된 캐릭터/유저 프로필, 최근 장면, 저장된 스타일을 반영해 이미지를 생성해줘.',
       '참조 이미지가 있으면 같이 사용해.',
       '이미지 생성이 끝나면 가능한 경우 같은 스냅샷에 결과를 저장해.',
       `snapshot token: ${snapshotToken || ''}`
@@ -1465,50 +1511,68 @@
     const composer = getChatGPTComposer();
     const text = readChatGPTComposerText(composer);
 
-    if (!composer || !text) return false;
+    if (!composer || !text) return { attempted: false, method: null };
     if (
       token &&
       !text.includes(token) &&
       !text.includes('ZETA Snapshot Generator') &&
       !text.includes('/snapshots/')
     ) {
-      return false;
+      return { attempted: false, method: null };
     }
 
     const sendButton = findChatGPTSendButton(composer);
     if (sendButton) {
-      sendButton.click();
-      return true;
+      const form = sendButton.closest('form') || composer.closest?.('form');
+      try {
+        if (form?.requestSubmit) {
+          form.requestSubmit(sendButton);
+          return { attempted: true, method: 'requestSubmit(button)' };
+        }
+      } catch {}
+
+      try {
+        sendButton.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        sendButton.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        sendButton.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        sendButton.click();
+        return { attempted: true, method: 'button.click' };
+      } catch {}
     }
 
     const form = composer.closest?.('form');
     if (form?.requestSubmit) {
       try {
         form.requestSubmit();
-        return true;
+        return { attempted: true, method: 'requestSubmit' };
       } catch {}
     }
 
-    try {
-      composer.focus();
-      composer.dispatchEvent(new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      }));
-      composer.dispatchEvent(new KeyboardEvent('keyup', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      }));
-      return true;
-    } catch {}
+    return { attempted: false, method: null };
+  }
+
+  function hasSubmittedChatGPTPrompt(token) {
+    const composerText = readChatGPTComposerText();
+    const composerStillHasToken = !!token && composerText.includes(token);
+
+    const userMessages = [
+      ...document.querySelectorAll('[data-message-author-role="user"]'),
+      ...document.querySelectorAll('article[data-testid^="conversation-turn"]')
+    ];
+
+    const messageHasToken = userMessages.some(node => {
+      const text = String(node.innerText || node.textContent || '');
+      return !!token && text.includes(token);
+    });
+
+    if (messageHasToken) return true;
+    if (!composerText && !composerStillHasToken) {
+      const stopButton =
+        document.querySelector('button[data-testid="stop-button"]') ||
+        document.querySelector('button[aria-label*="Stop" i]') ||
+        document.querySelector('button[aria-label*="중지"]');
+      if (stopButton) return true;
+    }
 
     return false;
   }
@@ -1617,23 +1681,32 @@
 
     let composerAttempts = 0;
     const submittedKey = `zetaSnapshot.submitted.${token}`;
+    let submitAttemptedAt = 0;
+    let submitAttempts = 0;
+
     const composerTimer = setInterval(() => {
       composerAttempts += 1;
 
+      if (hasSubmittedChatGPTPrompt(token)) {
+        clearInterval(composerTimer);
+        sessionStorage.setItem(submittedKey, '1');
+        showChatGPTBridgeBadge('ZETA 요청 자동 전송 확인됨', 'success');
+        return;
+      }
+
       const preparedByScript = setChatGPTComposerText(prompt);
-      const composer = getChatGPTComposer();
-      const currentText = readChatGPTComposerText(composer);
+      const currentText = readChatGPTComposerText();
       const alreadyPrepared =
         currentText.includes(token) ||
         currentText.includes('ZETA Snapshot Generator') ||
         currentText.includes('/snapshots/');
       const prepared = preparedByScript || alreadyPrepared;
 
-      if (!prepared && composerAttempts < 40) return;
+      if (!prepared && composerAttempts < 45) return;
 
       if (!prepared) {
         clearInterval(composerTimer);
-        showChatGPTBridgeBadge('ZETA 요청문을 찾지 못했어 · 입력창을 다시 열어줘.', 'error');
+        showChatGPTBridgeBadge('ZETA 요청문 자동 입력에 실패했어.', 'error');
         return;
       }
 
@@ -1642,19 +1715,25 @@
         return;
       }
 
-      showChatGPTBridgeBadge('ZETA 요청문 준비됨 · 자동 전송 시도 중');
+      const now = Date.now();
+      if (!submitAttemptedAt || now - submitAttemptedAt >= 1800) {
+        const result = submitChatGPTPrompt(token);
+        if (result.attempted) {
+          submitAttemptedAt = now;
+          submitAttempts += 1;
+          showChatGPTBridgeBadge(`ZETA 요청 자동 전송 확인 중 · ${submitAttempts}/3`);
+        }
+      }
 
-      const submitted = submitChatGPTPrompt(token);
-      if (submitted) {
+      if (submitAttempts >= 3 && submitAttemptedAt && now - submitAttemptedAt > 3500) {
         clearInterval(composerTimer);
-        sessionStorage.setItem(submittedKey, '1');
-        showChatGPTBridgeBadge('ZETA 요청 자동 전송 완료');
+        showChatGPTBridgeBadge('자동 전송 실패 · 파란 전송 버튼을 한 번 눌러줘.', 'error');
         return;
       }
 
-      if (composerAttempts >= 40) {
+      if (composerAttempts >= 60) {
         clearInterval(composerTimer);
-        showChatGPTBridgeBadge('자동 전송 버튼을 못 찾았어 · 전송만 한 번 눌러줘.', 'error');
+        showChatGPTBridgeBadge('자동 전송 실패 · 파란 전송 버튼을 한 번 눌러줘.', 'error');
       }
     }, 350);
 
@@ -2506,8 +2585,18 @@
 
       if (action === 'send-relay') {
         let handoffWindow = null;
+        let draft = null;
+        let roomId = null;
 
         try {
+          draft = readFormToDraft();
+          persistFromDraft(draft);
+          roomId = draft.roomId || getRoomId();
+
+          renderInlineCreatingCard(roomId, draft, 'creating');
+          state.resultBox.textContent = '스냅샷 저장 중...';
+          closeModal();
+
           handoffWindow = window.open('about:blank', 'zeta-snapshot-chatgpt');
           if (handoffWindow) {
             try {
@@ -2517,16 +2606,17 @@
             } catch {}
           }
 
-          const draft = readFormToDraft();
-          persistFromDraft(draft);
-          state.resultBox.textContent = '스냅샷 저장 중...';
           const result = await sendDraftToRelay(draft);
           state.lastCreatedSnapshotInfo = {
             token: result.token,
             snapshotUrl: result.getSnapshotUrl,
             statusUrl: result.getStatusUrl,
-            roomId: draft.roomId || getRoomId(),
+            roomId,
           };
+
+          removeInlineCreatingCard(roomId);
+          const storedInfo = getRoomSnapshotInfo(roomId);
+          if (storedInfo) renderInlineSnapshotCard(roomId, storedInfo, null);
 
           const primaryAction = qs('#zs-primary-action', state.overlay);
           if (primaryAction) {
@@ -2542,21 +2632,28 @@
             result.getSnapshotUrl || '',
             '',
             opened
-              ? 'ChatGPT 탭을 열고 요청문까지 준비했어. 전송만 누르면 돼.'
-              : 'ChatGPT 자동 열기가 막혔어. 아래 [ChatGPT 다시 열기]를 눌러줘.',
-            '이미지 생성이 끝나면 이 스크립트가 결과 이미지를 Worker로 되돌리고 제타 대화에 표시해.'
+              ? 'ChatGPT 탭에 요청문을 준비했고 자동 전송을 시도 중이야.'
+              : 'ChatGPT 자동 열기가 막혔어. [ChatGPT 다시 열기]를 눌러줘.',
+            '생성 중에는 제타 채팅에 진행 카드가 보이고, 완료되면 같은 위치에 결과 이미지가 표시돼.'
           ].join('\n');
 
-          flash(opened ? 'ChatGPT 탭 준비 완료' : '스냅샷 저장 완료');
+          flash(opened ? 'ChatGPT 자동 전송 시도 중' : '스냅샷 저장 완료');
         } catch (err) {
           try {
             if (handoffWindow && !handoffWindow.closed && handoffWindow.location.href === 'about:blank') {
               handoffWindow.close();
             }
           } catch {}
+
           console.error(err);
-          state.resultBox.textContent = `오류:\n${String(err.message || err)}`;
-          flash('전송 실패');
+          if (roomId && draft) {
+            renderInlineCreatingCard(roomId, draft, 'failed', String(err.message || err));
+          }
+
+          if (state.resultBox) {
+            state.resultBox.textContent = `오류:\n${String(err.message || err)}`;
+          }
+          flash('스냅샷 생성 실패');
         }
       }
     });
@@ -3712,6 +3809,52 @@
         position:relative;
         z-index:2;
       }
+      .zs-inline-progress-card{
+        min-height:320px;
+        display:flex!important;
+        align-items:center;
+        justify-content:center;
+        background:#ffffff;
+      }
+      .zs-inline-progress-body{
+        width:100%;
+        min-height:260px;
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        justify-content:center;
+        text-align:center;
+        padding:28px 18px;
+        box-sizing:border-box;
+        color:#374151;
+      }
+      .zs-inline-progress-body strong{
+        margin-top:10px;
+        font-size:16px;
+        color:#374151;
+      }
+      .zs-inline-progress-copy{
+        margin-top:8px;
+        font-size:12px;
+        line-height:1.55;
+        color:#6b7280;
+      }
+      .zs-inline-progress-emoji{
+        margin-top:12px;
+        font-size:18px;
+      }
+      .zs-inline-spinner{
+        width:28px;
+        height:28px;
+        border:3px solid #d1d5db;
+        border-top-color:#6b7280;
+        border-radius:50%;
+        animation:zs-spin .85s linear infinite;
+      }
+      .zs-inline-progress-body.is-error .zs-inline-spinner{ display:none; }
+      .zs-inline-progress-body.is-error strong{ color:#b91c1c; }
+      @keyframes zs-spin{ to{ transform:rotate(360deg); } }
+
       .zs-inline-card.zs-inline-floating{
         position:fixed;
         left:12px;
@@ -3973,7 +4116,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.7.5 snapshot verify + token handoff + resilient ChatGPT auto-submit ready');
+    console.log('[ZETA Snapshot] v0.7.6 verified auto-submit + progress card + plugin handoff ready');
   }
 
   init();
