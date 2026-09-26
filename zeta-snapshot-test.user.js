@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.10
+// @version      0.6.11
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -1637,7 +1637,7 @@
       return;
     }
 
-    root.style.display = 'grid';
+    root.style.display = 'flex';
 
     for (const [plotId, entry] of entries) {
       const btn = document.createElement('button');
@@ -2758,14 +2758,21 @@
         display:none;
         width:100%;
         box-sizing:border-box;
-        grid-template-columns:repeat(4, minmax(0, 1fr));
         gap:8px;
-        overflow:visible;
+        overflow-x:auto;
+        overflow-y:hidden;
+        flex-wrap:nowrap;
         padding:12px 16px 4px;
+        scrollbar-width:none;
+        -webkit-overflow-scrolling:touch;
+        overscroll-behavior-x:contain;
+        scroll-snap-type:x proximity;
       }
+      .zs-plot-tabs::-webkit-scrollbar{ display:none; }
       .zs-plot-tab{
+        flex:0 0 calc((100% - 24px) / 4);
         min-width:0;
-        width:100%;
+        width:auto;
         min-height:40px;
         display:flex;
         align-items:center;
@@ -2782,6 +2789,7 @@
         overflow:hidden;
         text-overflow:ellipsis;
         white-space:nowrap;
+        scroll-snap-align:start;
       }
       .zs-plot-tab,
       .zs-plot-tab *{
@@ -3287,13 +3295,16 @@
         .zs-subtitle{ display:none; }
         .zs-title{ font-size:17px; }
         .zs-plot-tabs{
-          grid-template-columns:repeat(4, minmax(0, 1fr));
           padding:10px 12px 4px;
           gap:7px;
+          overflow-x:auto;
+          overflow-y:hidden;
+          flex-wrap:nowrap;
         }
         .zs-plot-tab{
+          flex:0 0 calc((100% - 21px) / 4);
           min-width:0;
-          width:100%;
+          width:auto;
           min-height:38px;
           max-width:none;
           padding:9px 6px;
@@ -3405,7 +3416,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.10 profile-hub collection + fallback popup + draggable launcher ready');
+    console.log('[ZETA Snapshot] v0.6.11 profile-hub collection + fallback popup + draggable launcher ready');
   }
 
   init();
