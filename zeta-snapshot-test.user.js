@@ -1,18 +1,26 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.12
-// @description  ZETA Snapshot collector with MCP result write-back
+// @version      0.7.0
+// @description  ZETA Snapshot collector + ChatGPT bridge + automatic result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
+// @match        https://chatgpt.com/*
+// @match        https://www.chatgpt.com/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @connect      image.zeta-ai.io
 // @connect      zeta-snapshot.kwillhs.workers.dev
+// @connect      files.oaiusercontent.com
+// @connect      *.oaiusercontent.com
+// @connect      cdn.openai.com
 // ==/UserScript==
 
 (() => {
   'use strict';
+
+  const IS_CHATGPT_HOST = /(^|\.)chatgpt\.com$/i.test(location.hostname);
+  const IS_ZETA_HOST = /(^|\.)zeta-ai\.io$/i.test(location.hostname);
 
   const CONFIG = {
     RELAY_BASE: 'https://zeta-snapshot.kwillhs.workers.dev',
@@ -844,13 +852,17 @@
       };
     });
 
-    if (!characters.some(item => item.primary) && characters[0]) {
-      characters[0].primary = true;
+    const includedCharacters = characters.filter(item => item.included !== false);
+    const includedPrimary = includedCharacters.find(item => item.primary);
+
+    if (!includedPrimary && includedCharacters[0]) {
+      characters.forEach(item => { item.primary = false; });
+      includedCharacters[0].primary = true;
     }
 
     const primaryCharacter =
-      characters.find(item => item.primary) ||
-      characters.find(item => item.included) ||
+      includedCharacters.find(item => item.primary) ||
+      includedCharacters[0] ||
       characters[0] ||
       character;
 
@@ -1170,7 +1182,15 @@
       if (allowFallback) {
         const notice = qs('[data-testid="plugin-notice-slot"]');
         if (notice) {
+          card.classList.remove('zs-inline-floating');
           notice.appendChild(card);
+          card.style.display = '';
+          return true;
+        }
+
+        if (document.body) {
+          if (card.parentNode !== document.body) document.body.appendChild(card);
+          card.classList.add('zs-inline-floating');
           card.style.display = '';
           return true;
         }
@@ -1178,6 +1198,7 @@
       return false;
     }
 
+    card.classList.remove('zs-inline-floating');
     if (card.previousElementSibling !== host || card.parentNode !== host.parentNode) {
       host.insertAdjacentElement('afterend', card);
     }
@@ -1249,9 +1270,10 @@
 
   function buildChatGPTPrompt(snapshotUrl) {
     return [
-      '@ZETA Snapshot Generator',
+      '[@ZETA Snapshot Generator](plugin://zeta-snapshot-generator@created-by-me-remote)',
       '이 스냅샷을 불러와서 포함된 캐릭터/유저 프로필, 최근 장면, 저장된 스타일을 반영해 이미지를 생성해줘.',
       '참조 이미지가 있으면 같이 사용해.',
+      '이미지 생성이 끝나면 가능한 경우 같은 스냅샷에 결과를 저장해.',
       snapshotUrl || ''
     ].filter(Boolean).join('\n');
   }
@@ -1272,27 +1294,323 @@
     ta.remove();
   }
 
-  async function openSnapshotInChatGPT(info = {}) {
+  function getChatGPTBridgeToken() {
+    const url = new URL(location.href);
+    const fromUrl = String(url.searchParams.get('zeta_snapshot') || '').trim();
+    if (fromUrl) {
+      sessionStorage.setItem('zetaSnapshot.bridgeToken', fromUrl);
+      return fromUrl;
+    }
+    return String(sessionStorage.getItem('zetaSnapshot.bridgeToken') || '').trim();
+  }
+
+  function getChatGPTBridgePrompt() {
+    const url = new URL(location.href);
+    const fromUrl = String(url.searchParams.get('prompt') || url.searchParams.get('q') || '').trim();
+    if (fromUrl) {
+      sessionStorage.setItem('zetaSnapshot.bridgePrompt', fromUrl);
+      return fromUrl;
+    }
+    return String(sessionStorage.getItem('zetaSnapshot.bridgePrompt') || '').trim();
+  }
+
+  function buildChatGPTHandoffUrl(info = {}) {
     const snapshotUrl =
       info.snapshotUrl ||
       (info.token ? `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(info.token)}` : '');
+    if (!snapshotUrl || !info.token) return '';
 
-    if (!snapshotUrl) {
-      flash('스냅샷 URL이 없어.');
+    const url = new URL('https://chatgpt.com/');
+    url.searchParams.set('prompt', buildChatGPTPrompt(snapshotUrl));
+    url.searchParams.set('zeta_snapshot', info.token);
+    return url.toString();
+  }
+
+  function showChatGPTBridgeBadge(message, tone = 'normal') {
+    let badge = document.getElementById('zs-chatgpt-bridge-badge');
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.id = 'zs-chatgpt-bridge-badge';
+      Object.assign(badge.style, {
+        position: 'fixed',
+        right: '14px',
+        bottom: '14px',
+        zIndex: '2147483647',
+        maxWidth: 'min(360px, calc(100vw - 28px))',
+        padding: '10px 13px',
+        borderRadius: '12px',
+        background: '#ffffff',
+        color: '#111827',
+        border: '1px solid #e5e7eb',
+        boxShadow: '0 10px 30px rgba(0,0,0,.16)',
+        fontSize: '12px',
+        fontWeight: '700',
+        lineHeight: '1.45',
+        fontFamily: 'system-ui, -apple-system, sans-serif'
+      });
+      document.body.appendChild(badge);
+    }
+    badge.textContent = message;
+    badge.style.color = tone === 'error' ? '#b91c1c' : tone === 'success' ? '#047857' : '#111827';
+  }
+
+  function setChatGPTComposerText(prompt) {
+    if (!prompt) return false;
+    const composer =
+      document.querySelector('#prompt-textarea') ||
+      document.querySelector('textarea[name="prompt-textarea"]') ||
+      document.querySelector('main [contenteditable="true"][data-placeholder]');
+
+    if (!composer) return false;
+
+    const current = String(
+      composer.value ??
+      composer.innerText ??
+      composer.textContent ??
+      ''
+    ).trim();
+
+    if (current) return current.includes('ZETA Snapshot Generator') || current.includes('/snapshots/');
+
+    composer.focus();
+
+    if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
+      const proto = composer instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      setter?.call(composer, prompt);
+      composer.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    }
+
+    try {
+      document.execCommand('selectAll', false);
+      document.execCommand('insertText', false, prompt);
+    } catch {
+      composer.textContent = prompt;
+    }
+    composer.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      inputType: 'insertText',
+      data: prompt
+    }));
+    return true;
+  }
+
+  function gmFetchBlob(url) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest를 사용할 수 없어.'));
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        responseType: 'blob',
+        anonymous: false,
+        onload: response => {
+          if (response.status >= 200 && response.status < 300 && response.response) {
+            resolve(response.response);
+          } else {
+            reject(new Error(`이미지 가져오기 실패: ${response.status}`));
+          }
+        },
+        onerror: () => reject(new Error('이미지 가져오기 실패')),
+      });
+    });
+  }
+
+  async function fetchBridgeImageBlob(src) {
+    if (!src) throw new Error('생성 이미지 URL이 없어.');
+    const absolute = new URL(src, location.href).toString();
+
+    if (
+      absolute.startsWith('blob:') ||
+      absolute.startsWith('data:') ||
+      new URL(absolute).origin === location.origin
+    ) {
+      const response = await fetch(absolute, { credentials: 'include' });
+      if (!response.ok) throw new Error(`이미지 fetch 실패: ${response.status}`);
+      return response.blob();
+    }
+
+    try {
+      const response = await fetch(absolute, { credentials: 'include' });
+      if (response.ok) return response.blob();
+    } catch {}
+
+    return gmFetchBlob(absolute);
+  }
+
+  async function uploadResultBlobToRelay(token, blob) {
+    if (!token || !blob) throw new Error('결과 업로드 정보가 부족해.');
+    const mime = String(blob.type || 'image/png').split(';')[0].toLowerCase();
+    const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+    if (!allowed.has(mime)) throw new Error(`지원하지 않는 이미지 형식: ${mime}`);
+
+    const res = await fetch(
+      `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}/result`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': mime },
+        body: blob,
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || `결과 업로드 실패: ${res.status}`);
+    }
+    return data;
+  }
+
+  function findChatGPTGeneratedImage() {
+    const assistantRoots = [
+      ...document.querySelectorAll('[data-message-author-role="assistant"]'),
+      ...document.querySelectorAll('article[data-testid^="conversation-turn"] [data-message-author-role="assistant"]')
+    ];
+
+    const pool = [];
+    for (const root of assistantRoots) {
+      pool.push(...root.querySelectorAll('img'));
+    }
+
+    if (!pool.length) {
+      pool.push(...document.querySelectorAll(
+        'main img[alt*="generated" i], main img[alt*="image" i]'
+      ));
+    }
+
+    const candidates = [...new Set(pool)].filter(img => {
+      const src = String(img.currentSrc || img.src || '');
+      if (!src || /^data:image\/svg/i.test(src)) return false;
+      const w = Number(img.naturalWidth || img.width || 0);
+      const h = Number(img.naturalHeight || img.height || 0);
+      return w >= 256 && h >= 256;
+    });
+
+    return candidates[candidates.length - 1] || null;
+  }
+
+  async function initChatGPTBridge() {
+    const token = getChatGPTBridgeToken();
+    if (!token) return;
+
+    const prompt = getChatGPTBridgePrompt();
+    showChatGPTBridgeBadge('ZETA Snapshot 연결 중 · 요청문 준비 중');
+
+    let composerAttempts = 0;
+    const composerTimer = setInterval(() => {
+      composerAttempts += 1;
+      if (setChatGPTComposerText(prompt) || composerAttempts >= 30) {
+        clearInterval(composerTimer);
+        showChatGPTBridgeBadge(
+          composerAttempts >= 30
+            ? 'ZETA Snapshot 연결됨 · 요청문이 안 보이면 새로고침 후 다시 열어줘.'
+            : 'ZETA 요청문 준비됨 · 전송만 누르면 돼.'
+        );
+      }
+    }, 400);
+
+    const uploadedKey = `zetaSnapshot.uploaded.${token}`;
+    if (sessionStorage.getItem(uploadedKey) === '1') {
+      showChatGPTBridgeBadge('ZETA에 결과 저장 완료', 'success');
       return;
     }
 
+    let candidateSrc = '';
+    let candidateSince = 0;
+    let busy = false;
+    const startedAt = Date.now();
+
+    const watcher = setInterval(async () => {
+      if (busy) return;
+      if (Date.now() - startedAt > 30 * 60 * 1000) {
+        clearInterval(watcher);
+        return;
+      }
+
+      try {
+        const statusRes = await fetch(
+          `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(token)}/status`
+        );
+        const statusData = await statusRes.json().catch(() => ({}));
+        if (statusRes.ok && (statusData?.status === 'completed' || statusData?.hasResult)) {
+          sessionStorage.setItem(uploadedKey, '1');
+          showChatGPTBridgeBadge('ZETA에 결과 저장 완료', 'success');
+          clearInterval(watcher);
+          return;
+        }
+      } catch {}
+
+      const img = findChatGPTGeneratedImage();
+      const src = String(img?.currentSrc || img?.src || '');
+      if (!img || !src || !img.complete) return;
+
+      if (src !== candidateSrc) {
+        candidateSrc = src;
+        candidateSince = Date.now();
+        return;
+      }
+
+      if (Date.now() - candidateSince < 3500) return;
+
+      busy = true;
+      showChatGPTBridgeBadge('생성 이미지 감지 · ZETA에 저장 중');
+
+      try {
+        const blob = await fetchBridgeImageBlob(src);
+        await uploadResultBlobToRelay(token, blob);
+        sessionStorage.setItem(uploadedKey, '1');
+        showChatGPTBridgeBadge('ZETA에 결과 저장 완료 · 제타 탭으로 돌아가면 표시돼.', 'success');
+        clearInterval(watcher);
+      } catch (err) {
+        console.warn('[ZETA Snapshot] ChatGPT bridge upload failed', err);
+        showChatGPTBridgeBadge(`ZETA 저장 재시도 중 · ${String(err.message || err)}`, 'error');
+        candidateSince = Date.now();
+      } finally {
+        busy = false;
+      }
+    }, 2500);
+  }
+
+  async function openSnapshotInChatGPT(info = {}, targetWindow = null) {
+    const handoffUrl = buildChatGPTHandoffUrl(info);
+    if (!handoffUrl) {
+      flash('스냅샷 URL 또는 토큰이 없어.');
+      return false;
+    }
+
+    const snapshotUrl =
+      info.snapshotUrl ||
+      `${CONFIG.RELAY_BASE}/snapshots/${encodeURIComponent(info.token)}`;
     const prompt = buildChatGPTPrompt(snapshotUrl);
 
     try {
       await copyText(prompt);
-      flash('ChatGPT 요청문 복사 완료 · 붙여넣기만 하면 돼.');
     } catch (err) {
-      console.warn('[ZETA Snapshot] copy prompt failed', err);
-      flash('요청문 복사 실패 · 스냅샷 URL을 직접 붙여넣어줘.');
+      console.warn('[ZETA Snapshot] fallback copy failed', err);
     }
 
-    window.open('https://chatgpt.com/', '_blank', 'noopener,noreferrer');
+    try {
+      if (targetWindow && !targetWindow.closed) {
+        targetWindow.location.replace(handoffUrl);
+      } else {
+        targetWindow = window.open(handoffUrl, 'zeta-snapshot-chatgpt');
+      }
+    } catch (err) {
+      console.warn('[ZETA Snapshot] ChatGPT open failed', err);
+      targetWindow = window.open(handoffUrl, '_blank');
+    }
+
+    if (!targetWindow) {
+      flash('팝업이 막혔어 · ChatGPT 열기 버튼을 다시 눌러줘.');
+      return false;
+    }
+
+    flash('ChatGPT 탭에 요청문 준비 완료');
+    return true;
   }
 
   function renderInlineSnapshotCard(roomId, info = {}, snapshot = null) {
@@ -1435,7 +1753,18 @@
     };
 
     check();
-    setInterval(check, 1000);
+    setInterval(() => {
+      check();
+
+      const roomId = getRoomId();
+      const info = getRoomSnapshotInfo(roomId);
+      if (roomId && roomId !== 'manual-room' && info?.token) {
+        const cardId = getInlineCardId(roomId, info.token);
+        if (!document.getElementById(cardId)) {
+          renderInlineSnapshotCard(roomId, info, null);
+        }
+      }
+    }, 1000);
   }
 
   async function sendDraftToRelay(draft) {
@@ -1446,13 +1775,14 @@
             ? draft.character.characters
             : [draft.character].filter(Boolean));
 
-    const selectedCharacters = allCharacters.filter(item => item.included !== false);
+    const selectedCharacters = allCharacters.filter(item => item.included === true);
+    if (!selectedCharacters.length) {
+      throw new Error('포함할 캐릭터를 하나 이상 체크해줘.');
+    }
+
     const primaryCharacter =
       selectedCharacters.find(item => item.primary) ||
-      allCharacters.find(item => item.primary) ||
       selectedCharacters[0] ||
-      allCharacters[0] ||
-      draft.character ||
       {};
 
     const payload = {
@@ -1476,7 +1806,7 @@
           imageUrl: item.imageUrl || '',
           appearancePrompt: item.appearancePrompt || '',
           primary: !!item.primary,
-          included: item.included !== false,
+          included: item.included === true,
         })),
         selectedCharacterIds: selectedCharacters.map(item => item.slotId || item.id || item.name),
         snapshotOptions: {
@@ -1798,8 +2128,16 @@
       };
     });
 
-    if (characters.length && !characters.some(item => item.primary)) {
-      characters[0].primary = true;
+    const included = characters.filter(item => item.included);
+    const selectedPrimary = included.find(item => item.primary);
+
+    if (included.length && !selectedPrimary) {
+      characters.forEach(item => { item.primary = false; });
+      included[0].primary = true;
+    } else if (selectedPrimary) {
+      characters.forEach(item => {
+        if (item !== selectedPrimary) item.primary = false;
+      });
     }
 
     return characters;
@@ -1823,7 +2161,6 @@
         <div id="zs-plot-tabs" class="zs-plot-tabs"></div>
 
         <div class="zs-tools">
-          <button type="button" class="zs-refresh-btn" data-zs-action="load-real">✨ 자동 수집</button>
           <span class="zs-autosave-badge">● 자동 저장</span>
         </div>
 
@@ -1893,15 +2230,16 @@
             </div>
           </div>
 
-          <div class="zs-actions">
-            <button type="button" data-zs-action="close">닫기</button>
-            <button id="zs-primary-action" type="button" class="primary" data-zs-action="send-relay">스냅샷 만들기</button>
-          </div>
-
           <div class="zs-result-wrap">
             <label>결과</label>
             <pre id="zs-result"></pre>
           </div>
+        </div>
+
+        <div class="zs-actions">
+          <button type="button" data-zs-action="close">닫기</button>
+          <button type="button" class="zs-refresh-btn" data-zs-action="load-real">✨ 자동 수집</button>
+          <button id="zs-primary-action" type="button" class="primary" data-zs-action="send-relay">스냅샷 만들기</button>
         </div>
       </div>
     `;
@@ -2003,10 +2341,21 @@
       }
 
       if (action === 'send-relay') {
+        let handoffWindow = null;
+
         try {
+          handoffWindow = window.open('about:blank', 'zeta-snapshot-chatgpt');
+          if (handoffWindow) {
+            try {
+              handoffWindow.document.title = 'ZETA Snapshot → ChatGPT';
+              handoffWindow.document.body.innerHTML =
+                '<div style="font-family:system-ui;padding:24px">ZETA Snapshot 준비 중...</div>';
+            } catch {}
+          }
+
           const draft = readFormToDraft();
           persistFromDraft(draft);
-          state.resultBox.textContent = '전송 중...';
+          state.resultBox.textContent = '스냅샷 저장 중...';
           const result = await sendDraftToRelay(draft);
           state.lastCreatedSnapshotInfo = {
             token: result.token,
@@ -2015,25 +2364,32 @@
             roomId: draft.roomId || getRoomId(),
           };
 
-          const handoff = qs('#zs-handoff', state.overlay);
-          if (handoff) handoff.style.display = 'none';
-
           const primaryAction = qs('#zs-primary-action', state.overlay);
           if (primaryAction) {
             primaryAction.dataset.zsAction = 'open-chatgpt';
-            primaryAction.textContent = 'ChatGPT에서 이미지 생성';
+            primaryAction.textContent = 'ChatGPT 다시 열기';
           }
+
+          const opened = await openSnapshotInChatGPT(state.lastCreatedSnapshotInfo, handoffWindow);
 
           state.resultBox.textContent = [
             '스냅샷 데이터 저장 완료',
             '',
             result.getSnapshotUrl || '',
             '',
-            '이미지 생성은 아직 시작 전이야.',
-            '아래 고정된 흰색 [ChatGPT에서 이미지 생성] 버튼을 누르면 돼.'
+            opened
+              ? 'ChatGPT 탭을 열고 요청문까지 준비했어. 전송만 누르면 돼.'
+              : 'ChatGPT 자동 열기가 막혔어. 아래 [ChatGPT 다시 열기]를 눌러줘.',
+            '이미지 생성이 끝나면 이 스크립트가 결과 이미지를 Worker로 되돌리고 제타 대화에 표시해.'
           ].join('\n');
-          flash('저장 완료 · 아래 흰 버튼을 눌러줘');
+
+          flash(opened ? 'ChatGPT 탭 준비 완료' : '스냅샷 저장 완료');
         } catch (err) {
+          try {
+            if (handoffWindow && !handoffWindow.closed && handoffWindow.location.href === 'about:blank') {
+              handoffWindow.close();
+            }
+          } catch {}
           console.error(err);
           state.resultBox.textContent = `오류:\n${String(err.message || err)}`;
           flash('전송 실패');
@@ -2682,11 +3038,11 @@
         cursor:grab;
         width:50px;
         height:50px;
-        border:1px solid rgba(255,255,255,.12);
+        border:1px solid #d1d5db;
         border-radius:16px;
-        background:#18181b;
+        background:#ffffff;
         color:#fff;
-        box-shadow:0 10px 30px rgba(0,0,0,.35);
+        box-shadow:0 10px 28px rgba(17,24,39,.14);
         font-size:21px;
         transition:.16s ease;
       }
@@ -2712,11 +3068,11 @@
         display:flex;
         flex-direction:column;
         min-height:0;
-        background:#18181b;
-        color:#f4f4f5;
-        border:1px solid rgba(255,255,255,.08);
+        background:#ffffff;
+        color:#111827;
+        border:1px solid #e5e7eb;
         border-radius:22px;
-        box-shadow:0 28px 80px rgba(0,0,0,.5);
+        box-shadow:0 24px 70px rgba(17,24,39,.18);
       }
       .zs-head{
         flex:0 0 auto;
@@ -2725,8 +3081,8 @@
         justify-content:space-between;
         gap:12px;
         padding:16px 18px 14px;
-        border-bottom:1px solid rgba(255,255,255,.07);
-        background:#18181b;
+        border-bottom:1px solid #e5e7eb;
+        background:#ffffff;
         position:sticky;
         top:0;
         z-index:4;
@@ -2740,7 +3096,7 @@
       }
       .zs-subtitle{
         margin-top:3px;
-        color:#a1a1aa;
+        color:#6b7280;
         font-size:11px;
         line-height:1.35;
       }
@@ -2750,8 +3106,8 @@
         flex:0 0 auto;
         border:none;
         border-radius:10px;
-        background:#27272a;
-        color:#d4d4d8;
+        background:#f3f4f6;
+        color:#374151;
         font-size:16px;
         cursor:pointer;
       }
@@ -2786,9 +3142,9 @@
         justify-content:center;
         gap:6px;
         max-width:none;
-        border:1px solid rgba(255,255,255,.09);
-        background:#27272a;
-        color:#d4d4d8;
+        border:1px solid #e5e7eb;
+        background:#f3f4f6;
+        color:#374151;
         padding:10px 8px;
         border-radius:12px;
         cursor:pointer;
@@ -2800,7 +3156,7 @@
       }
       .zs-plot-tab,
       .zs-plot-tab *{
-        color:#d4d4d8!important;
+        color:#374151!important;
         opacity:1!important;
         visibility:visible!important;
         -webkit-text-fill-color:currentColor!important;
@@ -2809,13 +3165,13 @@
         min-width:0;
       }
       .zs-plot-tab.active{
-        background:#f4f4f5;
-        border-color:#f4f4f5;
-        color:#18181b!important;
+        background:#111827;
+        border-color:#111827;
+        color:#ffffff!important;
       }
       .zs-plot-tab.active *{
-        color:#18181b!important;
-        -webkit-text-fill-color:#18181b!important;
+        color:#ffffff!important;
+        -webkit-text-fill-color:#ffffff!important;
       }
       .zs-plot-tab-label{
         display:block!important;
@@ -2839,16 +3195,16 @@
         padding:10px 16px 4px;
       }
       .zs-refresh-btn{
-        border:1px solid rgba(255,255,255,.08)!important;
-        background:#27272a!important;
-        color:#e4e4e7!important;
+        border:1px solid #e5e7eb!important;
+        background:#f3f4f6!important;
+        color:#1f2937!important;
       }
       .zs-autosave-badge{
         margin-left:auto;
         display:inline-flex;
         align-items:center;
         gap:4px;
-        color:#71717a;
+        color:#6b7280;
         font-size:11px;
         white-space:nowrap;
       }
@@ -2871,7 +3227,7 @@
         overflow-y:auto;
         overflow-x:hidden;
         overscroll-behavior:contain;
-        padding:14px 16px 92px;
+        padding:14px 16px 18px;
       }
       .zs-grid{
         display:grid;
@@ -2888,7 +3244,7 @@
       .zs-section-title{
         margin-top:8px;
         padding-top:4px;
-        color:#f4f4f5;
+        color:#111827;
         font-size:13px;
         font-weight:800;
       }
@@ -2900,14 +3256,14 @@
         margin-top:8px;
       }
       .zs-section-title-row > label{
-        color:#f4f4f5!important;
+        color:#111827!important;
         font-size:13px!important;
         font-weight:800!important;
       }
       .zs-section-title-row > button{
-        border:1px solid rgba(255,255,255,.08);
-        background:#27272a;
-        color:#d4d4d8;
+        border:1px solid #e5e7eb;
+        background:#f3f4f6;
+        color:#374151;
         padding:7px 10px;
         border-radius:10px;
         cursor:pointer;
@@ -2916,12 +3272,12 @@
 
       .zs-field label,
       .zs-char-field > span{
-        color:#a1a1aa;
+        color:#6b7280;
         font-size:11px;
         font-weight:700;
       }
       .zs-help{
-        color:#71717a;
+        color:#6b7280;
         font-size:10px;
         font-weight:500;
       }
@@ -2932,11 +3288,11 @@
       .zs-char-field textarea{
         width:100%;
         box-sizing:border-box;
-        border:1px solid rgba(255,255,255,.09);
+        border:1px solid #e5e7eb;
         border-radius:12px;
         padding:10px 11px;
-        background:#27272a;
-        color:#f4f4f5;
+        background:#f3f4f6;
+        color:#111827;
         outline:none;
         font-size:13px;
         line-height:1.45;
@@ -2947,35 +3303,35 @@
       .zs-field textarea:focus,
       .zs-char-field input:focus,
       .zs-char-field textarea:focus{
-        border-color:#71717a;
-        background:#2f2f33;
+        border-color:#6b7280;
+        background:#ffffff;
       }
       .zs-field textarea{ min-height:88px; resize:vertical; }
       .zs-char-field textarea{ min-height:74px; resize:vertical; }
       #zs-messages{
         min-height:150px;
-        color:#d4d4d8;
-        background:#202024;
+        color:#374151;
+        background:#f9fafb;
       }
 
       .zs-technical{
         align-self:end;
-        border:1px solid rgba(255,255,255,.07);
+        border:1px solid #e5e7eb;
         border-radius:12px;
-        background:#202024;
+        background:#f9fafb;
         overflow:hidden;
       }
       .zs-technical > summary{
         list-style:none;
         cursor:pointer;
-        color:#71717a;
+        color:#6b7280;
         font-size:11px;
         font-weight:700;
         padding:11px 12px;
       }
       .zs-technical > summary::-webkit-details-marker{ display:none; }
       .zs-technical[open] > summary{
-        border-bottom:1px solid rgba(255,255,255,.06);
+        border-bottom:1px solid #e5e7eb;
       }
       .zs-technical > .zs-field{ padding:10px; }
 
@@ -2985,10 +3341,10 @@
         gap:10px;
       }
       .zs-char-card{
-        border:1px solid rgba(255,255,255,.08);
+        border:1px solid #e5e7eb;
         border-radius:16px;
         padding:12px;
-        background:#202024;
+        background:#f9fafb;
       }
       .zs-char-card-head{
         display:flex;
@@ -3002,7 +3358,7 @@
         overflow:hidden;
         text-overflow:ellipsis;
         white-space:nowrap;
-        color:#f4f4f5;
+        color:#111827;
         font-size:14px;
       }
       .zs-char-card-controls{
@@ -3017,7 +3373,7 @@
         flex-direction:row!important;
         align-items:center;
         gap:5px!important;
-        color:#a1a1aa!important;
+        color:#6b7280!important;
         font-size:11px!important;
         font-weight:600!important;
         white-space:nowrap;
@@ -3025,12 +3381,12 @@
       .zs-inline-check input{
         width:auto!important;
         margin:0;
-        accent-color:#f4f4f5;
+        accent-color:#111827;
       }
       .zs-char-remove{
         border:none;
-        background:#3f2025;
-        color:#fda4af;
+        background:#fef2f2;
+        color:#dc2626;
         border-radius:9px;
         padding:6px 8px;
         font-size:10px;
@@ -3049,7 +3405,7 @@
         display:flex;
         align-items:center;
         justify-content:center;
-        background:#27272a;
+        background:#f3f4f6;
         overflow:hidden;
       }
       .zs-char-slot-preview{
@@ -3075,9 +3431,9 @@
         grid-template-columns:120px minmax(0,1fr);
         gap:12px;
         padding:12px;
-        border:1px solid rgba(255,255,255,.08);
+        border:1px solid #e5e7eb;
         border-radius:16px;
-        background:#202024;
+        background:#f9fafb;
       }
       .zs-user-preview-col{ min-width:0; }
       .zs-user-fields{
@@ -3093,7 +3449,7 @@
         display:flex;
         align-items:center;
         justify-content:center;
-        background:#27272a;
+        background:#f3f4f6;
         overflow:hidden;
       }
       .zs-preview img{
@@ -3105,35 +3461,31 @@
       .zs-user-url{ margin-top:1px; }
 
       .zs-actions{
-        position:sticky;
-        bottom:-92px;
-        z-index:5;
+        flex:0 0 auto;
         display:grid;
-        grid-template-columns:110px minmax(0,1fr);
+        grid-template-columns:90px 120px minmax(0,1fr);
         gap:8px;
-        margin:18px -16px -92px;
+        margin:0;
         padding:12px 16px calc(12px + env(safe-area-inset-bottom));
-        border-top:1px solid rgba(255,255,255,.08);
-        background:rgba(24,24,27,.96);
-        backdrop-filter:blur(14px);
-        -webkit-backdrop-filter:blur(14px);
+        border-top:1px solid #e5e7eb;
+        background:#ffffff;
       }
       .zs-actions button{
-        background:#27272a;
-        color:#d4d4d8;
+        background:#f3f4f6;
+        color:#374151;
       }
       .zs-actions button.primary{
-        background:#f4f4f5;
-        color:#18181b;
+        background:#111827;
+        color:#ffffff;
         font-weight:800;
       }
 
       .zs-handoff{
         margin-top:14px;
         padding:10px;
-        border:1px solid rgba(255,255,255,.08);
+        border:1px solid #e5e7eb;
         border-radius:14px;
-        background:#202024;
+        background:#f9fafb;
         align-items:center;
         gap:10px;
       }
@@ -3143,14 +3495,14 @@
         border:none;
         border-radius:11px;
         padding:9px 12px;
-        background:#f4f4f5;
-        color:#18181b;
+        background:#111827;
+        color:#ffffff;
         font-size:12px;
         font-weight:800;
         cursor:pointer;
       }
       .zs-handoff span{
-        color:#a1a1aa;
+        color:#6b7280;
         font-size:10px;
         line-height:1.4;
       }
@@ -3160,7 +3512,7 @@
       }
       .zs-result-wrap label{
         display:block;
-        color:#a1a1aa;
+        color:#6b7280;
         font-size:11px;
         font-weight:700;
         margin-bottom:6px;
@@ -3170,9 +3522,9 @@
         min-height:0;
         max-height:230px;
         overflow:auto;
-        background:#0f0f11;
-        color:#d4d4d8;
-        border:1px solid rgba(255,255,255,.06);
+        background:#f9fafb;
+        color:#374151;
+        border:1px solid #e5e7eb;
         border-radius:12px;
         padding:11px;
         font-size:11px;
@@ -3188,13 +3540,25 @@
         width:min(640px, calc(100% - 24px));
         margin:12px auto;
         padding:12px;
-        border:1px solid rgba(255,255,255,.08);
+        border:1px solid #e5e7eb;
         border-radius:16px;
-        background:#18181b;
-        color:#f4f4f5;
-        box-shadow:0 8px 26px rgba(0,0,0,.18);
+        background:#ffffff;
+        color:#111827;
+        box-shadow:0 8px 24px rgba(17,24,39,.10);
         position:relative;
         z-index:2;
+      }
+      .zs-inline-card.zs-inline-floating{
+        position:fixed;
+        left:12px;
+        right:12px;
+        bottom:max(76px, calc(64px + env(safe-area-inset-bottom)));
+        width:auto;
+        max-width:640px;
+        max-height:68dvh;
+        overflow:auto;
+        margin:0 auto;
+        z-index:9999998;
       }
       .zs-inline-card-head{
         display:flex;
@@ -3212,18 +3576,18 @@
       .zs-inline-card-head strong{ font-size:13px; }
       .zs-inline-status{
         font-size:10px;
-        color:#a1a1aa;
-        background:#27272a;
+        color:#6b7280;
+        background:#f3f4f6;
         border-radius:999px;
         padding:4px 7px;
       }
       .zs-inline-status[data-status="completed"]{
-        background:#16351f;
-        color:#86efac;
+        background:#ecfdf5;
+        color:#15803d;
       }
       .zs-inline-status[data-status="failed"]{
-        background:#3f2025;
-        color:#fda4af;
+        background:#fef2f2;
+        color:#dc2626;
       }
       .zs-inline-card-actions{
         display:flex;
@@ -3233,8 +3597,8 @@
         border:none;
         border-radius:9px;
         padding:7px 9px;
-        background:#27272a;
-        color:#d4d4d8;
+        background:#f3f4f6;
+        color:#374151;
         font-size:10px;
         cursor:pointer;
       }
@@ -3244,19 +3608,19 @@
         max-height:720px;
         object-fit:contain;
         border-radius:12px;
-        background:#09090b;
+        background:#f3f4f6;
       }
       .zs-inline-waiting{
         padding:16px 10px;
         border-radius:12px;
-        background:#202024;
-        color:#71717a;
+        background:#f9fafb;
+        color:#6b7280;
         font-size:11px;
         text-align:center;
       }
       .zs-inline-error{
         margin-top:8px;
-        color:#fda4af;
+        color:#dc2626;
         font-size:11px;
         line-height:1.45;
       }
@@ -3267,8 +3631,8 @@
         bottom:max(24px, env(safe-area-inset-bottom));
         transform:translateX(-50%) translateY(10px);
         max-width:calc(100vw - 32px);
-        background:#f4f4f5;
-        color:#18181b;
+        background:#111827;
+        color:#ffffff;
         padding:10px 14px;
         border-radius:999px;
         font-size:12px;
@@ -3332,7 +3696,7 @@
           font-size:10px;
         }
         .zs-body{
-          padding:12px 12px 88px;
+          padding:12px 12px 16px;
         }
         .zs-grid{
           grid-template-columns:1fr;
@@ -3376,9 +3740,7 @@
         }
 
         .zs-actions{
-          grid-template-columns:84px minmax(0,1fr);
-          margin-left:-12px;
-          margin-right:-12px;
+          grid-template-columns:76px 108px minmax(0,1fr);
           padding-left:12px;
           padding-right:12px;
         }
@@ -3417,9 +3779,25 @@
   }
 
   function init() {
+    if (IS_CHATGPT_HOST) {
+      initChatGPTBridge().catch(err => {
+        console.warn('[ZETA Snapshot] ChatGPT bridge init failed', err);
+        showChatGPTBridgeBadge(`ZETA 연결 오류 · ${String(err.message || err)}`, 'error');
+      });
+      return;
+    }
+
+    if (!IS_ZETA_HOST) return;
+
     injectStyles();
     createLauncher();
     watchRoomNavigation();
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        restoreSnapshotForCurrentRoom();
+      }
+    });
 
     // 프로필 이동이 SPA 전환이어도 이어서 수집되도록 감시.
     setInterval(() => {
@@ -3431,7 +3809,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.12 profile-hub collection + fallback popup + draggable launcher ready');
+    console.log('[ZETA Snapshot] v0.7.0 white UI + ChatGPT bridge + automatic result write-back ready');
   }
 
   init();
