@@ -7,7 +7,7 @@ description: Load a ZETA snapshot through the bundled MCP server, generate the r
 
 Use the bundled `zeta-snapshot` MCP server for snapshot access. Do not use web browsing or a generic network fetch for ZETA snapshot data when MCP tools are available.
 
-1. Accept a snapshot token or a URL from exactly `https://zeta-snapshot.kwillhs.workers.dev`. For URLs, extract only the token from `/snapshots/{token}` or `/snapshots/{token}/status`. Never send the token to another host or print the full token unless asked.
+1. Accept a snapshot token or a URL from exactly `https://zeta-snapshot.softbridge.workers.dev`. For URLs, extract only the token from `/snapshots/{token}` or `/snapshots/{token}/status`. Never send the token to another host or print the full token unless asked.
 
 2. Call `get_snapshot` first. Treat its successful result as authoritative. Read `character.characters`, `userProfile`, `messages`, `stylePreset`, `stylePrompt`, and `additionalInstructions`; fall back to `character.snapshotOptions` only when top-level values are absent.
 
