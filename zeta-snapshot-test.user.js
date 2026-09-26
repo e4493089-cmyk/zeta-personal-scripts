@@ -350,15 +350,24 @@
     };
 
     save(CONFIG.STORAGE.USER, profile);
-    upsertPlotEntry(plotId, {
-      userProfile: profile,
-      rooms: {
-        [roomId]: {
-          roomId,
-          lastUsedAt: Date.now(),
-        },
-      },
-    });
+
+    const plotId = getPlotIdFromUrl() || state.activePlotId || null;
+    const roomId = getRoomId();
+
+    if (plotId) {
+      upsertPlotEntry(plotId, {
+        userProfile: profile,
+        rooms: roomId && roomId !== 'manual-room'
+          ? {
+              [roomId]: {
+                roomId,
+                lastUsedAt: Date.now(),
+              },
+            }
+          : {},
+      });
+    }
+
     return profile;
   }
 
