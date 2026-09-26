@@ -398,6 +398,15 @@
     };
 
     save(CONFIG.STORAGE.USER, profile);
+    upsertPlotEntry(plotId, {
+      userProfile: profile,
+      rooms: {
+        [roomId]: {
+          roomId,
+          lastUsedAt: Date.now(),
+        },
+      },
+    });
     return profile;
   }
 
@@ -496,6 +505,15 @@
       }
 
       save(CONFIG.STORAGE.USER, live);
+      upsertPlotEntry(plotId, {
+        userProfile: live,
+        rooms: {
+          [roomId]: {
+            roomId,
+            lastUsedAt: Date.now(),
+          },
+        },
+      });
       return live;
     }
 
@@ -673,6 +691,10 @@
 
     const profile = parseCharacterProfileDoc(document, plotId);
     save(CONFIG.STORAGE.CHARACTER, profile);
+    upsertPlotEntry(plotId, {
+      title: profile.plotTitle || profile.name || '',
+      character: profile,
+    });
     return profile;
   }
 
@@ -692,11 +714,15 @@
     const doc = new DOMParser().parseFromString(html, 'text/html');
     const profile = parseCharacterProfileDoc(doc, plotId);
     save(CONFIG.STORAGE.CHARACTER, profile);
+    upsertPlotEntry(plotId, {
+      title: profile.plotTitle || profile.name || '',
+      character: profile,
+    });
     return profile;
   }
 
   async function buildDraftFromCache() {
-    let character = load(CONFIG.STORAGE.CHARACTER, {
+    const legacyCharacter = load(CONFIG.STORAGE.CHARACTER, {
       id: null,
       kind: 'character',
       name: '캐릭터',
@@ -704,7 +730,7 @@
       imageUrl: '',
     });
 
-    let userProfile = load(CONFIG.STORAGE.USER, {
+    const legacyUser = load(CONFIG.STORAGE.USER, {
       id: null,
       kind: 'user',
       name: '유저',
@@ -713,7 +739,17 @@
     });
 
     const roomId = getRoomId();
-    const plotId = getPlotIdFromUrl() || character?.id || null;
+    const plotId =
+      getPlotIdFromUrl() ||
+      state.activePlotId ||
+      legacyCharacter?.plotId ||
+      legacyCharacter?.id ||
+      null;
+
+    const plotEntry = getPlotEntry(plotId);
+
+    let character = plotEntry?.character || legacyCharacter;
+    let userProfile = plotEntry?.userProfile || legacyUser;
 
     if (plotId) {
       try {
@@ -732,6 +768,7 @@
     }
 
     const global = load(CONFIG.STORAGE.GLOBAL, {});
+    const refreshedEntry = getPlotEntry(plotId) || plotEntry || {};
     const messages = collectRecentMessages();
 
     const characterText = messages
@@ -772,6 +809,8 @@
 
     const characterGroup = {
       ...character,
+      plotId: plotId || character?.plotId || character?.id || null,
+      id: plotId || character?.plotId || character?.id || null,
       name: primaryCharacter?.name || character?.name || '캐릭터',
       description: primaryCharacter?.description || '',
       imageUrl: primaryCharacter?.imageUrl || '',
@@ -779,13 +818,20 @@
       characters,
     };
 
-    return {
+    const draft = {
       source: 'auto',
+      plotId,
       roomId,
       anchor: buildAnchor(messages),
       messages,
-      stylePreset: global.stylePreset || '2d',
-      additionalInstructions: global.additionalInstructions || CONFIG.DEFAULT_INSTRUCTIONS,
+      stylePreset:
+        refreshedEntry.stylePreset ||
+        global.stylePreset ||
+        '2d',
+      additionalInstructions:
+        refreshedEntry.additionalInstructions ||
+        global.additionalInstructions ||
+        CONFIG.DEFAULT_INSTRUCTIONS,
       character: characterGroup,
       characters,
       userProfile: {
@@ -795,6 +841,30 @@
           buildAutoAppearance(userProfile, userText, '유저'),
       },
     };
+
+    if (plotId) {
+      upsertPlotEntry(plotId, {
+        title:
+          characterGroup.plotTitle ||
+          refreshedEntry.title ||
+          characterGroup.name ||
+          '',
+        character: characterGroup,
+        userProfile: draft.userProfile,
+        stylePreset: draft.stylePreset,
+        additionalInstructions: draft.additionalInstructions,
+        rooms: roomId && roomId !== 'manual-room'
+          ? {
+              [roomId]: {
+                roomId,
+                lastUsedAt: Date.now(),
+              },
+            }
+          : {},
+      });
+    }
+
+    return draft;
   }
 
   function getMockDraft(kind) {
