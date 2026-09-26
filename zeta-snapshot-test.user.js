@@ -6,7 +6,9 @@
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @connect      image.zeta-ai.io
+// @connect      zeta-snapshot.kwillhs.workers.dev
 // ==/UserScript==
 
 (() => {
@@ -475,10 +477,50 @@
     };
   }
 
+  function gmFetchBlob(url) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest를 사용할 수 없어.'));
+        return;
+      }
+
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        responseType: 'blob',
+        anonymous: false,
+        onload: response => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`이미지 GM 요청 실패: ${response.status}`));
+            return;
+          }
+
+          const blob = response.response;
+          if (!(blob instanceof Blob)) {
+            reject(new Error('이미지 응답을 Blob으로 받지 못했어.'));
+            return;
+          }
+
+          resolve(blob);
+        },
+        onerror: err => {
+          reject(new Error(`이미지 GM 요청 실패: ${err?.error || err?.statusText || 'network error'}`));
+        },
+        ontimeout: () => {
+          reject(new Error('이미지 GM 요청 시간 초과'));
+        },
+      });
+    });
+  }
+
   async function fetchBlobWithCreds(url) {
     if (url.startsWith('data:')) {
       const res = await fetch(url);
       return await res.blob();
+    }
+
+    if (/^https:\/\/image\.zeta-ai\.io\//i.test(url)) {
+      return await gmFetchBlob(url);
     }
 
     const res = await fetch(url, { credentials: 'include' });
