@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.9
+// @version      0.6.10
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -1637,7 +1637,7 @@
       return;
     }
 
-    root.style.display = 'flex';
+    root.style.display = 'grid';
 
     for (const [plotId, entry] of entries) {
       const btn = document.createElement('button');
@@ -2756,26 +2756,32 @@
 
       .zs-plot-tabs{
         display:none;
+        width:100%;
+        box-sizing:border-box;
+        grid-template-columns:repeat(4, minmax(0, 1fr));
         gap:8px;
-        overflow-x:auto;
+        overflow:visible;
         padding:12px 16px 4px;
-        scrollbar-width:none;
       }
-      .zs-plot-tabs::-webkit-scrollbar{ display:none; }
       .zs-plot-tab{
-        flex:0 0 auto;
+        min-width:0;
+        width:100%;
         min-height:40px;
         display:flex;
         align-items:center;
-        gap:8px;
-        max-width:260px;
+        justify-content:center;
+        gap:6px;
+        max-width:none;
         border:1px solid rgba(255,255,255,.09);
         background:#27272a;
         color:#d4d4d8;
-        padding:10px 14px;
+        padding:10px 8px;
         border-radius:12px;
         cursor:pointer;
         font-size:13px;
+        overflow:hidden;
+        text-overflow:ellipsis;
+        white-space:nowrap;
       }
       .zs-plot-tab,
       .zs-plot-tab *{
@@ -2785,7 +2791,7 @@
         -webkit-text-fill-color:currentColor!important;
       }
       .zs-plot-tab{
-        min-width:96px;
+        min-width:0;
       }
       .zs-plot-tab.active{
         background:#f4f4f5;
@@ -3281,13 +3287,17 @@
         .zs-subtitle{ display:none; }
         .zs-title{ font-size:17px; }
         .zs-plot-tabs{
-          padding:10px 12px 2px;
+          grid-template-columns:repeat(4, minmax(0, 1fr));
+          padding:10px 12px 4px;
           gap:7px;
         }
         .zs-plot-tab{
+          min-width:0;
+          width:100%;
           min-height:38px;
-          max-width:230px;
-          padding:9px 12px;
+          max-width:none;
+          padding:9px 6px;
+          font-size:12px!important;
         }
         .zs-tools{
           padding:9px 12px 2px;
@@ -3395,7 +3405,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.9 profile-hub collection + fallback popup + draggable launcher ready');
+    console.log('[ZETA Snapshot] v0.6.10 profile-hub collection + fallback popup + draggable launcher ready');
   }
 
   init();
