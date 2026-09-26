@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.5
+// @version      0.6.6
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -317,39 +317,123 @@
     };
   }
 
-  function collectSelectedUserProfileFromDialog() {
-    const dialog =
-      qs('section[role="dialog"][aria-label*="대화 프로필"]') ||
-      qs('[role="group"][aria-label="My chat profiles"]')?.closest('section[role="dialog"]') ||
-      qs('section[role="dialog"]');
+  function getProfileHubRoot() {
+    const group = qs('[role="group"][aria-label="My chat profiles"]');
+    if (!group) return null;
+    return (
+      group.closest('section[role="dialog"]') ||
+      group.closest('[role="dialog"]') ||
+      group.closest('section') ||
+      group
+    );
+  }
 
-    if (!dialog) {
-      throw new Error('대화 프로필 창을 열어둔 상태에서 다시 시도해줘.');
+  function collectCurrentUserProfileFromRoomCard(plotId = null, roomId = null) {
+    if (!/\/rooms\/[^/?#]+/.test(location.pathname)) return null;
+
+    const editCurrent = qs('button[aria-label="edit-my-plot-chat-profile"]');
+    if (!editCurrent) return null;
+
+    const row = editCurrent.parentElement;
+    const mainButton =
+      editCurrent.previousElementSibling?.tagName === 'BUTTON'
+        ? editCurrent.previousElementSibling
+        : row?.querySelector('button:not([aria-label])');
+
+    if (!mainButton) return null;
+
+    const name =
+      cleanText(qs('.body1', mainButton)?.textContent) ||
+      cleanText(qs('[class*="font-medium"]', mainButton)?.textContent) ||
+      '유저';
+
+    const description =
+      cleanText(qs('.caption1', mainButton)?.textContent) ||
+      cleanText(qs('[class*="text-white/50"]', mainButton)?.textContent) ||
+      '';
+
+    const imageUrl = imageUrlFromImg(qs('img', mainButton));
+    if (!name && !description && !imageUrl) return null;
+
+    return {
+      id: null,
+      kind: 'user',
+      name,
+      description,
+      imageUrl,
+      plotId,
+      roomId: roomId || getRoomId(),
+      source: 'room-current-profile-card',
+      updatedAt: Date.now(),
+    };
+  }
+
+  function collectSelectedUserProfileFromDialog(fallbackProfile = null) {
+    const group = qs('[role="group"][aria-label="My chat profiles"]');
+    const root = getProfileHubRoot();
+
+    if (!group || !root) {
+      if (fallbackProfile) return fallbackProfile;
+      throw new Error('대화 프로필 창을 찾지 못했어.');
     }
 
-    const items = qsa('[data-sentry-component="ChatProfileListItem"]', dialog);
-    if (!items.length) throw new Error('프로필 목록을 찾지 못했어.');
+    const items = qsa('[data-sentry-component="ChatProfileListItem"]', group);
+    if (!items.length) {
+      if (fallbackProfile) return fallbackProfile;
+      throw new Error('프로필 목록을 찾지 못했어.');
+    }
 
-    const active = items.find(item => {
-      const checkBadge = qs('.bg-primary-400 svg, .kt-profile-hub-selected svg', item);
+    let active = items.find(item => {
+      const selectedMarker = qs(
+        '.kt-profile-hub-selected, .bg-primary-400, [aria-checked="true"], [data-state="checked"]',
+        item
+      );
       const disabledButton = qsa('button', item).some(btn => btn.disabled);
-      return !!checkBadge || disabledButton;
+      return !!selectedMarker || disabledButton;
     });
 
-    if (!active) throw new Error('체크된 현재 사용 프로필을 찾지 못했어.');
+    // 체크 마커 구조가 바뀐 경우, 대화방에서 보이던 현재 프로필과
+    // 이름/이미지가 같은 항목을 현재 프로필로 잡는다.
+    if (!active && fallbackProfile) {
+      const fallbackName = cleanText(fallbackProfile.name || '');
+      const fallbackImage = stripImageTransform(fallbackProfile.imageUrl || '');
+
+      active = items.find(item => {
+        const itemName = cleanText(qs('.body1', item)?.textContent || '');
+        const itemImage = stripImageTransform(imageUrlFromImg(qs('img', item)));
+        return (
+          (fallbackName && itemName === fallbackName) ||
+          (fallbackImage && itemImage && itemImage === fallbackImage)
+        );
+      });
+    }
+
+    if (!active) {
+      if (fallbackProfile) return fallbackProfile;
+      throw new Error('현재 사용중인 프로필을 찾지 못했어.');
+    }
 
     const name =
       cleanText(qs('.body1', active)?.textContent) ||
       cleanText(qs('img', active)?.alt) ||
+      fallbackProfile?.name ||
       '유저';
 
-    const description = cleanText(qs('.caption1', active)?.textContent) || '';
-    const imageUrl = imageUrlFromImg(qs('img', active));
+    const description =
+      cleanText(qs('.caption1', active)?.textContent) ||
+      fallbackProfile?.description ||
+      '';
+
+    const imageUrl =
+      imageUrlFromImg(qs('img', active)) ||
+      fallbackProfile?.imageUrl ||
+      '';
 
     const editLabel = qs('button[aria-label^="edit-"]', active)?.getAttribute('aria-label') || '';
-    const id = editLabel.startsWith('edit-') ? editLabel.slice(5) : null;
+    const id = editLabel.startsWith('edit-') ? editLabel.slice(5) : (fallbackProfile?.id || null);
 
     const profile = {
+      ...fallbackProfile,
       id,
       kind: 'user',
       name,
@@ -361,8 +445,8 @@
 
     save(CONFIG.STORAGE.USER, profile);
 
-    const plotId = getPlotIdFromUrl() || state.activePlotId || null;
-    const roomId = getRoomId();
+    const plotId = profile.plotId || getPlotIdFromUrl() || state.activePlotId || null;
+    const roomId = profile.roomId || getRoomId();
 
     if (plotId) {
       upsertPlotEntry(plotId, {
@@ -1982,6 +2066,7 @@
 
     const roomId = getRoomId();
     const messages = collectRecentMessages();
+    const roomUserProfile = collectCurrentUserProfileFromRoomCard(null, roomId);
     const profileButton = qs('button[data-testid="chat-header-profile"][aria-label="Open plot profile"]');
 
     if (!profileButton) {
@@ -1993,6 +2078,7 @@
       roomId,
       roomUrl: location.href,
       messages,
+      roomUserProfile,
       anchor: buildAnchor(messages),
       startedAt: Date.now(),
     });
@@ -2094,22 +2180,72 @@
         /\/rooms\/[^/?#]+/.test(location.pathname) &&
         getRoomId() === session.roomId
       ) {
-        const alreadyOpen = qs('section[role="dialog"][aria-label*="대화 프로필"]') ||
-          qs('[role="group"][aria-label="My chat profiles"]')?.closest('section[role="dialog"]');
+        const roomUserProfile =
+          collectCurrentUserProfileFromRoomCard(session.plotId, session.roomId) ||
+          session.roomUserProfile ||
+          null;
+
+        const group = qs('[role="group"][aria-label="My chat profiles"]');
+
+        if (group) {
+          setCollectSession({
+            ...session,
+            phase: 'wait-user-profile',
+            roomUserProfile,
+            profileOpenAt: Date.now(),
+          });
+          return;
+        }
+
+        const trigger = findUserProfileHubTrigger();
+        if (!trigger) {
+          if (!roomUserProfile) {
+            throw new Error('대화방에서 현재 유저 프로필 카드도 찾지 못했어.');
+          }
+
+          const userProfile = {
+            ...roomUserProfile,
+            plotId: session.plotId,
+            roomId: session.roomId,
+            updatedAt: Date.now(),
+          };
+
+          save(CONFIG.STORAGE.USER, userProfile);
+          upsertPlotEntry(session.plotId, {
+            userProfile,
+            rooms: {
+              [session.roomId]: {
+                roomId: session.roomId,
+                lastUsedAt: Date.now(),
+              },
+            },
+          });
+
+          const draft = await buildDraftFromCache({
+            plotId: session.plotId,
+            roomId: session.roomId,
+            messages: Array.isArray(session.messages) ? session.messages : [],
+            character: session.character || getPlotEntry(session.plotId)?.character || null,
+            userProfile,
+            skipAutoCollect: true,
+          });
+          draft.anchor = session.anchor || buildAnchor(draft.messages || []);
+
+          setCollectSession(null);
+          openDraft(draft);
+          flash('유저 프로필 카드 기준으로 수집 완료');
+          return;
+        }
 
         setCollectSession({
           ...session,
           phase: 'wait-user-profile',
+          roomUserProfile,
+          profileOpenAt: Date.now(),
         });
 
-        if (!alreadyOpen) {
-          const trigger = findUserProfileHubTrigger();
-          if (!trigger) {
-            throw new Error('대화방에서 현재 유저 프로필 버튼을 찾지 못했어.');
-          }
-          flash('2/3 현재 유저 프로필 여는 중...');
-          trigger.click();
-        }
+        flash('2/3 현재 유저 프로필 여는 중...');
+        trigger.click();
         return;
       }
 
@@ -2118,18 +2254,32 @@
         /\/rooms\/[^/?#]+/.test(location.pathname) &&
         getRoomId() === session.roomId
       ) {
-        const dialog =
-          qs('section[role="dialog"][aria-label*="대화 프로필"]') ||
-          qs('[role="group"][aria-label="My chat profiles"]')?.closest('section[role="dialog"]');
+        const group = qs('[role="group"][aria-label="My chat profiles"]');
 
-        if (!dialog) return;
+        // 바텀시트가 뜨면 체크된 프로필을 우선 사용.
+        // 2.5초 안에 못 뜨더라도 대화방 현재 프로필 카드 정보로 계속 진행한다.
+        if (!group && Date.now() - Number(session.profileOpenAt || 0) < 2500) {
+          return;
+        }
 
-        const selected = collectSelectedUserProfileFromDialog();
+        const fallbackProfile =
+          collectCurrentUserProfileFromRoomCard(session.plotId, session.roomId) ||
+          session.roomUserProfile ||
+          null;
+
+        const selected = group
+          ? collectSelectedUserProfileFromDialog(fallbackProfile)
+          : fallbackProfile;
+
+        if (!selected) {
+          throw new Error('현재 유저 프로필 정보를 찾지 못했어.');
+        }
+
         const userProfile = {
           ...selected,
           plotId: session.plotId,
           roomId: session.roomId,
-          source: 'room-selected-profile',
+          source: group ? 'room-selected-profile' : 'room-current-profile-card',
           updatedAt: Date.now(),
         };
 
@@ -2473,12 +2623,28 @@
         cursor:pointer;
         font-size:13px;
       }
+      .zs-plot-tab,
+      .zs-plot-tab *{
+        color:#d4d4d8!important;
+        opacity:1!important;
+        visibility:visible!important;
+        -webkit-text-fill-color:currentColor!important;
+      }
+      .zs-plot-tab{
+        min-width:96px;
+      }
       .zs-plot-tab.active{
         background:#f4f4f5;
         border-color:#f4f4f5;
-        color:#18181b;
+        color:#18181b!important;
+      }
+      .zs-plot-tab.active *{
+        color:#18181b!important;
+        -webkit-text-fill-color:#18181b!important;
       }
       .zs-plot-tab-label{
+        display:block!important;
+        min-width:0;
         max-width:190px;
         overflow:hidden;
         text-overflow:ellipsis;
@@ -3048,7 +3214,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.5 profile-hub collection + fallback popup + draggable launcher ready');
+    console.log('[ZETA Snapshot] v0.6.6 profile-hub collection + fallback popup + draggable launcher ready');
   }
 
   init();
