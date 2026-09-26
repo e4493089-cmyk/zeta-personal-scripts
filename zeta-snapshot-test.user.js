@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot Test Prototype
 // @namespace    zeta-snapshot-test
-// @version      0.1.0
+// @version      0.2.0
 // @description  ZETA Snapshot collector/review/send prototype
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -106,13 +106,23 @@
   }
 
   function getRoomId() {
-    const m = location.pathname.match(/\/rooms\/([^/?#]+)/);
-    return m ? m[1] : 'manual-room';
+    let m = location.pathname.match(/\/rooms\/([^/?#]+)/);
+    if (m) return m[1];
+
+    m = location.pathname.match(/\/my-plot-chat-profile\/[^/?#]+\/([^/?#]+)\/edit/);
+    if (m) return m[1];
+
+    return 'manual-room';
   }
 
   function getPlotIdFromUrl() {
-    const m = location.pathname.match(/\/plots\/([^/?#]+)/);
-    return m ? m[1] : null;
+    let m = location.pathname.match(/\/plots\/([^/?#]+)/);
+    if (m) return m[1];
+
+    m = location.pathname.match(/\/my-plot-chat-profile\/([^/?#]+)\/[^/?#]+\/edit/);
+    if (m) return m[1];
+
+    return null;
   }
 
   function pickBestImageUrl(candidates) {
@@ -121,12 +131,14 @@
 
     const scored = valid.map(url => {
       let score = 0;
-      if (/profile-image/.test(url)) score += 30;
-      if (/plot-cover-image/.test(url)) score += 20;
+      if (/user-plot-chat-profile-image/.test(url)) score += 80;
+      if (/profile-image/.test(url)) score += 60;
+      if (/plot-cover-image/.test(url)) score -= 1000;
 
       const w = (url.match(/[?&]w=(\d+)/)?.[1]) || '';
       score += Number(w || 0);
 
+      if (/1920/.test(url)) score += 600;
       if (/1080/.test(url)) score += 500;
       if (/q=90/.test(url)) score += 10;
 
@@ -135,6 +147,34 @@
 
     scored.sort((a, b) => b.score - a.score);
     return scored[0].url;
+  }
+
+  function stripImageTransform(url) {
+    if (!url) return '';
+    try {
+      const u = new URL(url, location.origin);
+      if (u.hostname === 'image.zeta-ai.io') u.search = '';
+      return u.href;
+    } catch {
+      return String(url).replace(/\?.*$/, '');
+    }
+  }
+
+  function imageUrlFromImg(img, { original = true } = {}) {
+    if (!img) return '';
+
+    const candidates = [];
+    if (img.currentSrc) candidates.push(img.currentSrc);
+    if (img.src) candidates.push(img.src);
+
+    const srcset = img.getAttribute('srcset') || '';
+    srcset.split(',').forEach(part => {
+      const url = part.trim().split(/\s+/)[0];
+      if (url) candidates.push(url);
+    });
+
+    const best = pickBestImageUrl(candidates);
+    return original ? stripImageTransform(best) : best;
   }
 
   function makeSvgDataUrl(label, bg = '#888') {
@@ -271,7 +311,7 @@
     if (!items.length) throw new Error('프로필 목록을 찾지 못했어.');
 
     const active = items.find(item => {
-      const checkBadge = qs('.bg-primary-400 svg', item);
+      const checkBadge = qs('.bg-primary-400 svg, .kt-profile-hub-selected svg', item);
       const disabledButton = qsa('button', item).some(btn => btn.disabled);
       return !!checkBadge || disabledButton;
     });
@@ -284,10 +324,13 @@
       '유저';
 
     const description = cleanText(qs('.caption1', active)?.textContent) || '';
-    const imageUrl = qs('img', active)?.currentSrc || qs('img', active)?.src || '';
+    const imageUrl = imageUrlFromImg(qs('img', active));
+
+    const editLabel = qs('button[aria-label^="edit-"]', active)?.getAttribute('aria-label') || '';
+    const id = editLabel.startsWith('edit-') ? editLabel.slice(5) : null;
 
     const profile = {
-      id: active.getAttribute('data-profile-id') || null,
+      id,
       kind: 'user',
       name,
       description,
@@ -300,79 +343,141 @@
     return profile;
   }
 
+  function parseUserProfileEditDoc(doc, plotId, roomId) {
+    const name = cleanText(doc.querySelector('input[name="name"]')?.value || '');
+    const description = String(doc.querySelector('textarea[name="description"]')?.value || '').trim();
+    const img = doc.querySelector('img[alt="profile image"]');
+    const imageUrl = imageUrlFromImg(img);
+
+    const imageProfileId =
+      imageUrl.match(/\/user-plot-chat-profile-image\/([^/]+)\//)?.[1] || null;
+
+    if (!name && !description && !imageUrl) {
+      throw new Error('현재 사용 프로필 편집 페이지에서 프로필 정보를 찾지 못했어.');
+    }
+
+    return {
+      id: imageProfileId,
+      kind: 'user',
+      name: name || '유저',
+      description,
+      imageUrl,
+      plotId,
+      roomId,
+      source: 'current-profile-edit-page',
+      updatedAt: Date.now(),
+    };
+  }
+
+  async function collectCurrentUserProfileFromEditPage(plotId, roomId) {
+    if (!plotId || !roomId || roomId === 'manual-room') {
+      throw new Error('plotId 또는 roomId가 없어 현재 프로필을 자동 수집할 수 없어.');
+    }
+
+    const url = `/ko/my-plot-chat-profile/${encodeURIComponent(plotId)}/${encodeURIComponent(roomId)}/edit`;
+    const res = await fetch(url, { credentials: 'include' });
+
+    if (!res.ok) {
+      throw new Error(`현재 프로필 편집 페이지 요청 실패: ${res.status}`);
+    }
+
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const profile = parseUserProfileEditDoc(doc, plotId, roomId);
+    save(CONFIG.STORAGE.USER, profile);
+    return profile;
+  }
+
+  function parseCharacterProfileDoc(doc, plotId) {
+    const basic = doc.querySelector('[data-sentry-component="PlotBasic"]');
+    const plotTitle = cleanText(
+      basic?.querySelector('.title1')?.textContent ||
+      basic?.querySelector('span')?.textContent ||
+      ''
+    );
+    const plotSummary = cleanText(basic?.querySelector('p.heading3')?.textContent || '');
+
+    const longRoot = doc.querySelector('[data-sentry-component="PlotLongDescription"]');
+    const charImg =
+      longRoot?.querySelector('img[alt^="Profile image of "]') ||
+      doc.querySelector('img[alt^="Profile image of "]');
+
+    let name = '';
+    if (charImg) {
+      name = cleanText((charImg.getAttribute('alt') || '').replace(/^Profile image of\s*/i, ''));
+      if (!name) {
+        name = cleanText(charImg.closest('button')?.querySelector('.heading2')?.textContent || '');
+      }
+    }
+
+    if (!name) {
+      name = cleanText(
+        doc.querySelector('[data-sentry-component="StaticIntroMessage"] .caption1')?.textContent ||
+        ''
+      );
+    }
+
+    const imageUrl = charImg ? imageUrlFromImg(charImg) : '';
+
+    let description = '';
+    if (longRoot) {
+      const clone = longRoot.cloneNode(true);
+      clone.querySelectorAll('button, h1, h2, h3, img, svg').forEach(el => el.remove());
+      description = cleanText(clone.textContent || '');
+      description = description.replace(/^캐릭터\s*/i, '').trim();
+      if (name && description.startsWith(name)) {
+        description = description.slice(name.length).trim();
+      }
+      if (!description || description === '.' || description === name) {
+        description = '';
+      }
+    }
+
+    return {
+      id: plotId,
+      kind: 'character',
+      name: name || plotTitle || '캐릭터',
+      description,
+      imageUrl: /\/profile-image\//.test(imageUrl) ? imageUrl : '',
+      plotTitle,
+      plotSummary,
+      source: 'plot-profile-page',
+      updatedAt: Date.now(),
+    };
+  }
+
   function collectCharacterProfileFromCurrentPage() {
     const plotId = getPlotIdFromUrl();
     if (!plotId || !/\/profile/.test(location.pathname)) {
       throw new Error('캐릭터 프로필 페이지에서 실행해줘. (/plots/.../profile)');
     }
 
-    const ogTitle = qs('meta[property="og:title"]')?.content || '';
-    const h1Text = cleanText(qs('h1')?.textContent || '');
-    const candidates = [h1Text, cleanText(ogTitle)]
-      .filter(Boolean)
-      .map(t => t.replace(/\s*[|｜-]\s*제타.*$/i, '').trim());
-
-    const name = candidates[0] || '캐릭터';
-
-    const descRoots = [
-      qs('[data-sentry-component="PlotLongDescription"]'),
-      qs('[data-sentry-component="PlotIntro"]'),
-    ].filter(Boolean);
-
-    const descTexts = [];
-    for (const root of descRoots) {
-      const text = cleanText(root.innerText || root.textContent || '');
-      if (text && text !== '캐릭터' && text !== '인트로' && text !== name) {
-        descTexts.push(text);
-      }
-    }
-    const description = [...new Set(descTexts)].join('\n').trim();
-
-    const imageCandidates = [];
-    qsa('img').forEach(img => {
-      const src = img.currentSrc || img.src || '';
-      const srcset = img.getAttribute('srcset') || '';
-
-      if (/profile-image|plot-cover-image|image\.zeta-ai\.io/i.test(src)) {
-        imageCandidates.push(src);
-      }
-
-      if (srcset) {
-        srcset.split(',').forEach(part => {
-          const u = cleanText(part.split(' ')[0]);
-          if (/profile-image|plot-cover-image|image\.zeta-ai\.io/i.test(u)) {
-            imageCandidates.push(u);
-          }
-        });
-      }
-    });
-
-    qsa('link[rel="preload"][as="image"]').forEach(link => {
-      const srcset = link.getAttribute('imagesrcset') || '';
-      srcset.split(',').forEach(part => {
-        const u = cleanText(part.split(' ')[0]);
-        if (/profile-image|plot-cover-image|image\.zeta-ai\.io/i.test(u)) imageCandidates.push(u);
-      });
-    });
-
-    const imageUrl = pickBestImageUrl(imageCandidates);
-
-    const profile = {
-      id: plotId,
-      kind: 'character',
-      name,
-      description,
-      imageUrl,
-      source: 'plot-profile-page',
-      updatedAt: Date.now(),
-    };
-
+    const profile = parseCharacterProfileDoc(document, plotId);
     save(CONFIG.STORAGE.CHARACTER, profile);
     return profile;
   }
 
-  function buildDraftFromCache() {
-    const character = load(CONFIG.STORAGE.CHARACTER, {
+  async function collectCharacterProfileById(plotId) {
+    if (!plotId) throw new Error('plotId가 없어 캐릭터 프로필을 자동 수집할 수 없어.');
+
+    const res = await fetch(
+      `/ko/plots/${encodeURIComponent(plotId)}/profile?fromRoom=true`,
+      { credentials: 'include' }
+    );
+
+    if (!res.ok) {
+      throw new Error(`캐릭터 프로필 요청 실패: ${res.status}`);
+    }
+
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const profile = parseCharacterProfileDoc(doc, plotId);
+    save(CONFIG.STORAGE.CHARACTER, profile);
+    return profile;
+  }
+
+  async function buildDraftFromCache() {
+    let character = load(CONFIG.STORAGE.CHARACTER, {
       id: null,
       kind: 'character',
       name: '캐릭터',
@@ -380,7 +485,7 @@
       imageUrl: '',
     });
 
-    const userProfile = load(CONFIG.STORAGE.USER, {
+    let userProfile = load(CONFIG.STORAGE.USER, {
       id: null,
       kind: 'user',
       name: '유저',
@@ -388,13 +493,38 @@
       imageUrl: '',
     });
 
+    const roomId = getRoomId();
+    const plotId = getPlotIdFromUrl() || character?.id || null;
+
+    if (plotId) {
+      try {
+        character = await collectCharacterProfileById(plotId);
+      } catch (err) {
+        console.warn('[ZETA Snapshot] character auto collect failed', err);
+      }
+
+      if (roomId && roomId !== 'manual-room') {
+        try {
+          userProfile = await collectCurrentUserProfileFromEditPage(plotId, roomId);
+        } catch (err) {
+          console.warn('[ZETA Snapshot] user profile auto collect failed', err);
+        }
+      }
+    }
+
     const global = load(CONFIG.STORAGE.GLOBAL, {});
     const messages = collectRecentMessages();
-    const recentText = messages.map(m => m.text).join('\n');
+
+    const characterText = messages
+      .filter(m => m.speaker === 'character')
+      .map(m => m.text)
+      .join('\n');
+
+    const userText = '';
 
     return {
-      source: 'cache',
-      roomId: getRoomId(),
+      source: 'auto',
+      roomId,
       anchor: buildAnchor(messages),
       messages,
       stylePreset: global.stylePreset || '2d',
@@ -403,13 +533,13 @@
         ...character,
         appearancePrompt:
           character.manualAppearancePrompt ||
-          buildAutoAppearance(character, recentText, '캐릭터'),
+          buildAutoAppearance(character, characterText, '캐릭터'),
       },
       userProfile: {
         ...userProfile,
         appearancePrompt:
           userProfile.manualAppearancePrompt ||
-          buildAutoAppearance(userProfile, recentText, '유저'),
+          buildAutoAppearance(userProfile, userText, '유저'),
       },
     };
   }
@@ -752,7 +882,15 @@
       const action = btn.dataset.zsAction;
 
       if (action === 'close') return closeModal();
-      if (action === 'load-real') return openDraft(buildDraftFromCache());
+      if (action === 'load-real') {
+        state.resultBox.textContent = '자동 수집 중...';
+        try {
+          return openDraft(await buildDraftFromCache());
+        } catch (err) {
+          state.resultBox.textContent = `자동 수집 오류:\n${String(err.message || err)}`;
+          return;
+        }
+      }
       if (action === 'mock-image-only') return openDraft(getMockDraft('image-only'));
       if (action === 'mock-full') return openDraft(getMockDraft('full'));
       if (action === 'mock-empty') return openDraft(getMockDraft('empty'));
@@ -909,7 +1047,16 @@
         }
 
         if (type === 'draft') {
-          openDraft(buildDraftFromCache());
+          (async () => {
+            try {
+              flash('프로필 자동 수집 중...');
+              openDraft(await buildDraftFromCache());
+              flash('자동 수집 완료');
+            } catch (err) {
+              console.error(err);
+              alert(String(err.message || err));
+            }
+          })();
           return;
         }
 
@@ -1061,8 +1208,10 @@
         overflow:hidden;
       }
       .zs-preview img{
-        max-width:100%;
-        max-height:180px;
+        width:120px;
+        height:120px;
+        object-fit:cover;
+        border-radius:12px;
         display:block;
       }
       .zs-actions{
