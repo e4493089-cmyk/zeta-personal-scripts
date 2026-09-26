@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.7.2
+// @version      0.7.3
 // @description  ZETA Snapshot collector + ChatGPT bridge + automatic result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -2017,8 +2017,8 @@
       btn.style.setProperty('line-height', '1.2', 'important');
       btn.style.setProperty('opacity', '1', 'important');
       btn.style.setProperty('visibility', 'visible', 'important');
-      btn.style.setProperty('-webkit-text-fill-color', plotId === activePlotId ? '#18181b' : '#e4e4e7', 'important');
-      btn.style.setProperty('color', plotId === activePlotId ? '#18181b' : '#e4e4e7', 'important');
+      btn.style.setProperty('-webkit-text-fill-color', plotId === activePlotId ? '#ffffff' : '#374151', 'important');
+      btn.style.setProperty('color', plotId === activePlotId ? '#ffffff' : '#374151', 'important');
 
       if (plotId === activePlotId) btn.classList.add('active');
       root.append(btn);
@@ -3841,7 +3841,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.7.2 softbridge endpoint + white UI + ChatGPT auto-submit bridge ready');
+    console.log('[ZETA Snapshot] v0.7.3 white tab contrast fix + softbridge endpoint ready');
   }
 
   init();
