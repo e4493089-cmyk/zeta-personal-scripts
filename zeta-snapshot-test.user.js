@@ -921,6 +921,147 @@
     };
   }
 
+  function renderCharacterSlots(characters) {
+    const root = qs('#zs-character-slots', state.overlay);
+    if (!root) return;
+
+    const list = Array.isArray(characters) && characters.length
+      ? characters
+      : [{
+          id: crypto.randomUUID(),
+          slotId: crypto.randomUUID(),
+          name: '',
+          description: '',
+          imageUrl: '',
+          appearancePrompt: '',
+          included: true,
+          primary: true,
+        }];
+
+    root.innerHTML = '';
+
+    list.forEach((item, index) => {
+      const card = document.createElement('div');
+      card.className = 'zs-char-card';
+      card.dataset.charIndex = String(index);
+
+      const head = document.createElement('div');
+      head.className = 'zs-char-card-head';
+
+      const title = document.createElement('strong');
+      title.textContent = item.name || `캐릭터 ${index + 1}`;
+
+      const controls = document.createElement('div');
+      controls.className = 'zs-char-card-controls';
+
+      const includeLabel = document.createElement('label');
+      includeLabel.className = 'zs-inline-check';
+      const include = document.createElement('input');
+      include.type = 'checkbox';
+      include.dataset.charField = 'included';
+      include.checked = item.included !== false;
+      includeLabel.append(include, document.createTextNode(' 이번 장면'));
+
+      const primaryLabel = document.createElement('label');
+      primaryLabel.className = 'zs-inline-check';
+      const primary = document.createElement('input');
+      primary.type = 'radio';
+      primary.name = 'zs-primary-character';
+      primary.dataset.charField = 'primary';
+      primary.checked = !!item.primary;
+      primaryLabel.append(primary, document.createTextNode(' 대표'));
+
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'zs-char-remove';
+      remove.dataset.zsRemoveCharacter = String(index);
+      remove.textContent = '삭제';
+
+      controls.append(includeLabel, primaryLabel, remove);
+      head.append(title, controls);
+
+      const grid = document.createElement('div');
+      grid.className = 'zs-char-grid';
+
+      const previewWrap = document.createElement('div');
+      previewWrap.className = 'zs-char-preview-wrap';
+      const preview = document.createElement('img');
+      preview.className = 'zs-char-slot-preview';
+      preview.dataset.charPreview = String(index);
+      preview.alt = item.name || `캐릭터 ${index + 1}`;
+      if (item.imageUrl) preview.src = item.imageUrl;
+      previewWrap.append(preview);
+
+      const fields = document.createElement('div');
+      fields.className = 'zs-char-fields';
+
+      const makeField = (labelText, field, value, textarea = false) => {
+        const wrap = document.createElement('label');
+        wrap.className = 'zs-char-field';
+        const label = document.createElement('span');
+        label.textContent = labelText;
+        const input = textarea ? document.createElement('textarea') : document.createElement('input');
+        if (!textarea) input.type = 'text';
+        input.dataset.charField = field;
+        input.value = value || '';
+        wrap.append(label, input);
+        return wrap;
+      };
+
+      fields.append(
+        makeField('이름', 'name', item.name),
+        makeField('원본 설명', 'description', item.description, true),
+        makeField('외형 프롬프트', 'appearancePrompt', item.appearancePrompt, true),
+        makeField('프로필 이미지 URL', 'imageUrl', item.imageUrl)
+      );
+
+      const hiddenId = document.createElement('input');
+      hiddenId.type = 'hidden';
+      hiddenId.dataset.charField = 'id';
+      hiddenId.value = item.id || '';
+
+      const hiddenSlotId = document.createElement('input');
+      hiddenSlotId.type = 'hidden';
+      hiddenSlotId.dataset.charField = 'slotId';
+      hiddenSlotId.value = item.slotId || item.id || crypto.randomUUID();
+
+      card.append(head, grid);
+      grid.append(previewWrap, fields);
+      card.append(hiddenId, hiddenSlotId);
+      root.append(card);
+    });
+
+    if (!root.querySelector('[data-char-field="primary"]:checked')) {
+      const first = root.querySelector('[data-char-field="primary"]');
+      if (first) first.checked = true;
+    }
+  }
+
+  function readCharacterSlots() {
+    const cards = qsa('.zs-char-card', state.overlay);
+    const characters = cards.map((card, index) => {
+      const get = field => card.querySelector(`[data-char-field="${field}"]`);
+      return {
+        id: get('id')?.value || null,
+        slotId: get('slotId')?.value || `manual:${index + 1}`,
+        kind: 'character',
+        name: get('name')?.value?.trim() || `캐릭터 ${index + 1}`,
+        description: get('description')?.value?.trim() || '',
+        imageUrl: get('imageUrl')?.value?.trim() || '',
+        appearancePrompt: get('appearancePrompt')?.value?.trim() || '',
+        manualAppearancePrompt: get('appearancePrompt')?.value?.trim() || '',
+        included: !!get('included')?.checked,
+        primary: !!get('primary')?.checked,
+      };
+    });
+
+    if (characters.length && !characters.some(item => item.primary)) {
+      characters[0].primary = true;
+    }
+
+    return characters;
+  }
+
   function ensureModal() {
     if (state.overlay) return;
 
@@ -957,28 +1098,11 @@
             </div>
 
             <div class="zs-field zs-span2">
-              <label>캐릭터 이름</label>
-              <input id="zs-char-name" type="text" />
-            </div>
-
-            <div class="zs-field zs-span2">
-              <label>캐릭터 원본 설명</label>
-              <textarea id="zs-char-desc"></textarea>
-            </div>
-
-            <div class="zs-field zs-span2">
-              <label>캐릭터 외형 프롬프트 (자동 수집 + 수정 가능)</label>
-              <textarea id="zs-char-appearance"></textarea>
-            </div>
-
-            <div class="zs-field">
-              <label>캐릭터 이미지 URL</label>
-              <input id="zs-char-image" type="text" />
-            </div>
-
-            <div class="zs-field">
-              <label>캐릭터 프리뷰</label>
-              <div class="zs-preview"><img id="zs-char-preview" /></div>
+              <div class="zs-section-title-row">
+                <label>캐릭터 슬롯</label>
+                <button type="button" data-zs-action="add-character-slot">+ 슬롯 추가</button>
+              </div>
+              <div id="zs-character-slots" class="zs-character-slots"></div>
             </div>
 
             <div class="zs-field zs-span2">
@@ -1061,6 +1185,30 @@
       if (action === 'mock-full') return openDraft(getMockDraft('full'));
       if (action === 'mock-empty') return openDraft(getMockDraft('empty'));
 
+      if (action === 'add-character-slot') {
+        const characters = readCharacterSlots();
+        characters.push({
+          id: null,
+          slotId: crypto.randomUUID(),
+          name: '',
+          description: '',
+          imageUrl: '',
+          appearancePrompt: '',
+          included: true,
+          primary: !characters.length,
+        });
+        renderCharacterSlots(characters);
+        return;
+      }
+
+      if (btn.dataset.zsRemoveCharacter != null) {
+        const index = Number(btn.dataset.zsRemoveCharacter);
+        const characters = readCharacterSlots();
+        characters.splice(index, 1);
+        renderCharacterSlots(characters);
+        return;
+      }
+
       if (action === 'save-local') {
         const draft = readFormToDraft();
         persistFromDraft(draft);
@@ -1086,9 +1234,18 @@
     });
 
     overlay.addEventListener('input', e => {
-      if (e.target.id === 'zs-char-image') {
-        qs('#zs-char-preview', overlay).src = e.target.value || '';
+      if (e.target.matches('[data-char-field="imageUrl"]')) {
+        const card = e.target.closest('.zs-char-card');
+        const preview = card?.querySelector('.zs-char-slot-preview');
+        if (preview) preview.src = e.target.value || '';
       }
+
+      if (e.target.matches('[data-char-field="name"]')) {
+        const card = e.target.closest('.zs-char-card');
+        const title = card?.querySelector('.zs-char-card-head strong');
+        if (title) title.textContent = e.target.value.trim() || '캐릭터';
+      }
+
       if (e.target.id === 'zs-user-image') {
         qs('#zs-user-preview', overlay).src = e.target.value || '';
       }
