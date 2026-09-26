@@ -1514,7 +1514,7 @@ async function deleteSnapshot(env, token) {
 // MCP server for ChatGPT plugin
 // ─────────────────────────────────
 
-const MCP_ORIGIN = "https://zeta-snapshot.kwillhs.workers.dev";
+const MCP_ORIGIN = "https://zeta-snapshot.softbridge.workers.dev";
 
 async function handleMcp(request, env) {
   let rpc;
@@ -1531,7 +1531,7 @@ async function handleMcp(request, env) {
     return mcpOk(id, {
       protocolVersion: rpc.params?.protocolVersion || "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "zeta-snapshot", version: "3.1.0" },
+      serverInfo: { name: "zeta-snapshot", version: "3.1.1" },
       instructions: "Read snapshots with get_snapshot. After generating an image, save it with save_snapshot_result using the same token and generated image file."
     });
   }
