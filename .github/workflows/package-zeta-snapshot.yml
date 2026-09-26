@@ -1,0 +1,36 @@
+name: Package ZETA Snapshot userscript
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/package-zeta-snapshot.yml"
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare package
+        run: |
+          mkdir -p dist/zeta-snapshot-v0.5.0
+          cp zeta-snapshot-test.user.js dist/zeta-snapshot-v0.5.0/zeta-snapshot-test-v0.5.0.user.js
+          cat > dist/zeta-snapshot-v0.5.0/README.txt <<'EOF'
+          ZETA Snapshot userscript v0.5.0
+
+          - Auto-saves plot/user/character/style/instructions
+          - Appearance prompt starts as an exact copy of the original description
+          - Preserves chat message DOM order
+          - Saves room snapshot token/status across reloads
+          - Polls snapshot result status and restores inline result card
+          - Manual result-image upload fallback
+          - Single camera launcher
+          EOF
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeta-snapshot-v0.5.0
+          path: dist/zeta-snapshot-v0.5.0/
+          if-no-files-found: error
