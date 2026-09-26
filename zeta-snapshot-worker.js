@@ -1531,7 +1531,7 @@ async function handleMcp(request, env) {
     return mcpOk(id, {
       protocolVersion: rpc.params?.protocolVersion || "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "zeta-snapshot", version: "3.0.0" },
+      serverInfo: { name: "zeta-snapshot", version: "3.1.0" },
       instructions: "Read snapshots with get_snapshot. After generating an image, save it with save_snapshot_result using the same token and generated image file."
     });
   }
@@ -1597,7 +1597,7 @@ function getMcpTools() {
     {
       name: "get_snapshot_reference_images",
       title: "Get ZETA snapshot reference images",
-      description: "Return stored character and user reference images for image generation.",
+      description: "Return every included character reference image plus the stored user reference image for image generation.",
       inputSchema: tokenSchema,
       annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false }
     },
@@ -1716,6 +1716,56 @@ async function mcpGetSnapshotStatus(env, args) {
   };
 }
 
+async function fetchAllowedSnapshotReference(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return null;
+
+  let parsed;
+  try { parsed = new URL(raw); }
+  catch { return null; }
+
+  if (parsed.protocol !== "https:" || parsed.hostname !== "image.zeta-ai.io") {
+    return null;
+  }
+
+  const response = await fetch(parsed.toString(), { redirect: "follow" });
+  if (!response.ok) return null;
+
+  let finalUrl;
+  try { finalUrl = new URL(response.url || parsed.toString()); }
+  catch { return null; }
+
+  if (finalUrl.protocol !== "https:" || finalUrl.hostname !== "image.zeta-ai.io") {
+    return null;
+  }
+
+  const mimeType = (response.headers.get("content-type") || "image/png")
+    .split(";")[0]
+    .trim()
+    .toLowerCase();
+
+  if (!new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]).has(mimeType)) {
+    return null;
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.byteLength || bytes.byteLength > MAX_IMAGE_BYTES) return null;
+
+  return { bytes, mimeType };
+}
+
+async function readStoredSnapshotReference(env, key) {
+  if (!key) return null;
+  const object = await env.IMAGES.get(key);
+  if (!object) return null;
+
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  if (!bytes.byteLength || bytes.byteLength > MAX_IMAGE_BYTES) return null;
+
+  const mimeType = object.httpMetadata?.contentType || "image/png";
+  return { bytes, mimeType };
+}
+
 async function mcpGetSnapshotReferenceImages(env, args) {
   const token = requireMcpToken(args);
   const row = await findSnapshot(env, token);
@@ -1724,25 +1774,82 @@ async function mcpGetSnapshotReferenceImages(env, args) {
 
   const content = [];
   const references = [];
+  const character = safeJson(row.character_json, null);
 
-  for (const [kind, key] of [
-    ["character", row.character_image_key],
-    ["user", row.user_image_key]
-  ]) {
-    if (!key) continue;
-    const object = await env.IMAGES.get(key);
-    if (!object) continue;
+  const includedCharacters = Array.isArray(character?.characters)
+    ? character.characters
+        .filter(item => item && item.included === true)
+        .sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)))
+    : [];
 
-    const bytes = new Uint8Array(await object.arrayBuffer());
-    const mimeType = object.httpMetadata?.contentType || "image/png";
+  let characterReferenceCount = 0;
+  const seenUrls = new Set();
 
-    content.push({
-      type: "image",
-      data: bytesToBase64(bytes),
-      mimeType
-    });
+  for (const item of includedCharacters) {
+    const imageUrl = String(item?.imageUrl || "").trim();
+    if (!imageUrl || seenUrls.has(imageUrl)) continue;
+    seenUrls.add(imageUrl);
 
-    references.push({ kind, mimeType, sizeBytes: bytes.byteLength });
+    try {
+      const image = await fetchAllowedSnapshotReference(imageUrl);
+      if (!image) continue;
+
+      content.push({
+        type: "image",
+        data: bytesToBase64(image.bytes),
+        mimeType: image.mimeType
+      });
+
+      references.push({
+        kind: "character",
+        id: item.id || item.slotId || null,
+        name: item.name || null,
+        primary: item.primary === true,
+        mimeType: image.mimeType,
+        sizeBytes: image.bytes.byteLength,
+        source: "character-profile"
+      });
+      characterReferenceCount += 1;
+    } catch {}
+  }
+
+  // Backward-compatible fallback for old snapshots or inaccessible original URLs.
+  if (!characterReferenceCount && row.character_image_key) {
+    const image = await readStoredSnapshotReference(env, row.character_image_key);
+    if (image) {
+      content.push({
+        type: "image",
+        data: bytesToBase64(image.bytes),
+        mimeType: image.mimeType
+      });
+      references.push({
+        kind: "character",
+        id: character?.id || null,
+        name: character?.name || null,
+        primary: true,
+        mimeType: image.mimeType,
+        sizeBytes: image.bytes.byteLength,
+        source: "stored-fallback"
+      });
+    }
+  }
+
+  if (row.user_image_key) {
+    const image = await readStoredSnapshotReference(env, row.user_image_key);
+    if (image) {
+      content.push({
+        type: "image",
+        data: bytesToBase64(image.bytes),
+        mimeType: image.mimeType
+      });
+      references.push({
+        kind: "user",
+        id: safeJson(row.user_profile_json, null)?.id || null,
+        mimeType: image.mimeType,
+        sizeBytes: image.bytes.byteLength,
+        source: "stored-user-profile"
+      });
+    }
   }
 
   if (!content.length) {
@@ -1751,7 +1858,12 @@ async function mcpGetSnapshotReferenceImages(env, args) {
 
   return {
     content,
-    structuredContent: { ok: true, references },
+    structuredContent: {
+      ok: true,
+      includedCharacterCount: includedCharacters.length,
+      characterReferenceCount,
+      references
+    },
     isError: false
   };
 }
