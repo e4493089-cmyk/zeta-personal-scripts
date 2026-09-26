@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.7.0
+// @version      0.7.1
 // @description  ZETA Snapshot collector + ChatGPT bridge + automatic result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -1501,16 +1501,48 @@
     showChatGPTBridgeBadge('ZETA Snapshot 연결 중 · 요청문 준비 중');
 
     let composerAttempts = 0;
+    const submittedKey = `zetaSnapshot.submitted.${token}`;
     const composerTimer = setInterval(() => {
       composerAttempts += 1;
-      if (setChatGPTComposerText(prompt) || composerAttempts >= 30) {
-        clearInterval(composerTimer);
-        showChatGPTBridgeBadge(
-          composerAttempts >= 30
-            ? 'ZETA Snapshot 연결됨 · 요청문이 안 보이면 새로고침 후 다시 열어줘.'
-            : 'ZETA 요청문 준비됨 · 전송만 누르면 돼.'
-        );
+      const prepared = setChatGPTComposerText(prompt);
+
+      if (!prepared && composerAttempts < 30) return;
+
+      clearInterval(composerTimer);
+
+      if (!prepared) {
+        showChatGPTBridgeBadge('ZETA Snapshot 연결됨 · 요청문 자동 입력에 실패했어.', 'error');
+        return;
       }
+
+      showChatGPTBridgeBadge('ZETA 요청문 준비됨 · 자동 전송 대기 중');
+
+      if (sessionStorage.getItem(submittedKey) === '1') return;
+
+      let sendAttempts = 0;
+      const sendTimer = setInterval(() => {
+        sendAttempts += 1;
+
+        const sendButton =
+          document.querySelector('button[data-testid="send-button"]') ||
+          document.querySelector('button[aria-label="Send prompt"]') ||
+          document.querySelector('button[aria-label="Send message"]') ||
+          document.querySelector('button[aria-label="메시지 보내기"]') ||
+          document.querySelector('button[aria-label="전송"]');
+
+        if (sendButton && !sendButton.disabled && sendButton.getAttribute('aria-disabled') !== 'true') {
+          clearInterval(sendTimer);
+          sessionStorage.setItem(submittedKey, '1');
+          showChatGPTBridgeBadge('ZETA 요청 자동 전송 중');
+          sendButton.click();
+          return;
+        }
+
+        if (sendAttempts >= 25) {
+          clearInterval(sendTimer);
+          showChatGPTBridgeBadge('자동 전송 버튼을 못 찾았어 · 전송만 한 번 눌러줘.', 'error');
+        }
+      }, 300);
     }, 400);
 
     const uploadedKey = `zetaSnapshot.uploaded.${token}`;
@@ -3809,7 +3841,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.7.0 white UI + ChatGPT bridge + automatic result write-back ready');
+    console.log('[ZETA Snapshot] v0.7.1 white UI + ChatGPT auto-submit bridge + automatic result write-back ready');
   }
 
   init();
