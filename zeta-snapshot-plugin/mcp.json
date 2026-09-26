@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "zeta-snapshot": {
+      "type": "streamable-http",
+      "url": "https://zeta-snapshot.kwillhs.workers.dev/mcp"
+    }
+  }
+}
