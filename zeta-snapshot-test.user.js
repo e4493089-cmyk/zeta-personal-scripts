@@ -974,6 +974,7 @@
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'zs-char-remove';
+      remove.dataset.zsAction = 'remove-character-slot';
       remove.dataset.zsRemoveCharacter = String(index);
       remove.textContent = '삭제';
 
@@ -1516,6 +1517,130 @@
         gap:6px;
       }
       .zs-span2{ grid-column:span 2; }
+      .zs-section-title-row{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:10px;
+      }
+      .zs-section-title-row > button{
+        border:1px solid #d1d5db;
+        background:#f8fafc;
+        color:#334155;
+        padding:7px 10px;
+        border-radius:9px;
+        cursor:pointer;
+        font-size:12px;
+      }
+      .zs-character-slots{
+        display:flex;
+        flex-direction:column;
+        gap:12px;
+      }
+      .zs-char-card{
+        border:1px solid #dbe1e8;
+        border-radius:14px;
+        padding:12px;
+        background:#f8fafc;
+      }
+      .zs-char-card-head{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:10px;
+        margin-bottom:10px;
+      }
+      .zs-char-card-head strong{
+        min-width:0;
+        overflow:hidden;
+        text-overflow:ellipsis;
+        white-space:nowrap;
+        font-size:14px;
+      }
+      .zs-char-card-controls{
+        display:flex;
+        align-items:center;
+        gap:8px;
+        flex-wrap:wrap;
+        justify-content:flex-end;
+      }
+      .zs-inline-check{
+        display:flex!important;
+        flex-direction:row!important;
+        align-items:center;
+        gap:4px!important;
+        font-size:12px!important;
+        font-weight:500!important;
+        white-space:nowrap;
+      }
+      .zs-inline-check input{
+        width:auto!important;
+        margin:0;
+      }
+      .zs-char-remove{
+        border:none;
+        background:#e5e7eb;
+        color:#475569;
+        border-radius:8px;
+        padding:6px 8px;
+        font-size:11px;
+        cursor:pointer;
+      }
+      .zs-char-grid{
+        display:grid;
+        grid-template-columns:132px minmax(0,1fr);
+        gap:12px;
+        align-items:start;
+      }
+      .zs-char-preview-wrap{
+        width:120px;
+        height:120px;
+        border:1px dashed #cbd5e1;
+        border-radius:12px;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        background:#fff;
+        overflow:hidden;
+      }
+      .zs-char-slot-preview{
+        width:120px;
+        height:120px;
+        object-fit:cover;
+        display:block;
+      }
+      .zs-char-fields{
+        display:flex;
+        flex-direction:column;
+        gap:8px;
+        min-width:0;
+      }
+      .zs-char-field{
+        display:flex;
+        flex-direction:column;
+        gap:5px;
+      }
+      .zs-char-field > span{
+        font-size:12px;
+        font-weight:700;
+        color:#475569;
+      }
+      .zs-char-field input,
+      .zs-char-field textarea{
+        width:100%;
+        border:1px solid #d1d5db;
+        border-radius:9px;
+        padding:9px 10px;
+        background:#fff;
+        color:#111827;
+        box-sizing:border-box;
+        font-size:12px;
+        line-height:1.45;
+      }
+      .zs-char-field textarea{
+        min-height:78px;
+        resize:vertical;
+      }
       .zs-field label{
         font-size:13px;
         font-weight:700;
@@ -1608,6 +1733,11 @@
         .zs-span2{ grid-column:span 1; }
         .zs-overlay{ padding:8px; }
         .zs-modal{ width:100%; max-height:96vh; border-radius:14px; }
+        .zs-char-grid{ grid-template-columns:1fr; }
+        .zs-char-preview-wrap{ width:100%; height:150px; }
+        .zs-char-slot-preview{ width:150px; height:150px; }
+        .zs-char-card-head{ align-items:flex-start; flex-direction:column; }
+        .zs-char-card-controls{ justify-content:flex-start; }
       }
     `;
 
