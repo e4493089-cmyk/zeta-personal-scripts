@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "zeta-snapshot": {
+      "type": "streamable-http",
+      "url": "https://zeta-snapshot.kwillhs.workers.dev/mcp",
+      "headers": {}
+    }
+  }
+}
