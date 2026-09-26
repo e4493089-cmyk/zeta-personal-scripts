@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.7
+// @version      0.6.8
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -58,6 +58,7 @@
     autosaveTimer: null,
     roomPollTimers: new Map(),
     inlineMountTimers: new Map(),
+    lastCreatedSnapshotInfo: null,
     lastObservedRoomId: null,
     collectResumeBusy: false,
   };
@@ -332,69 +333,65 @@
   function collectCurrentUserProfileFromRoomCard(plotId = null, roomId = null) {
     if (!/\/rooms\/[^/?#]+/.test(location.pathname)) return null;
 
-    const editCurrent = qs('button[aria-label="edit-my-plot-chat-profile"]');
-    if (!editCurrent) return null;
-
-    const row = editCurrent.parentElement;
-    const mainButton =
-      editCurrent.previousElementSibling?.tagName === 'BUTTON'
-        ? editCurrent.previousElementSibling
-        : row?.querySelector('button:not([aria-label])');
-
-    if (!mainButton) return null;
+    // 현재 대화방에서는 유저 메시지 오른쪽 아바타가
+    // 현재 사용중인 유저 프로필을 그대로 보여준다.
+    const rows = qsa('[data-sentry-component="RightTextContent"]');
+    const row = rows[rows.length - 1];
+    if (!row) return null;
 
     const name =
-      cleanText(qs('.body1', mainButton)?.textContent) ||
-      cleanText(qs('[class*="font-medium"]', mainButton)?.textContent) ||
+      cleanText(qs('.caption1', row)?.textContent) ||
+      cleanText(qs('img', row)?.alt) ||
       '유저';
 
-    const description =
-      cleanText(qs('.caption1', mainButton)?.textContent) ||
-      cleanText(qs('[class*="text-white/50"]', mainButton)?.textContent) ||
-      '';
+    const profileButton = Array.from(row.children || [])
+      .find(el => el?.tagName === 'BUTTON' && el.querySelector('img')) ||
+      qsa('button', row).find(btn => btn.querySelector('img'));
 
-    const imageUrl = imageUrlFromImg(qs('img', mainButton));
-    if (!name && !description && !imageUrl) return null;
+    const imageUrl = imageUrlFromImg(qs('img', profileButton || row));
+
+    if (!name && !imageUrl) return null;
 
     return {
       id: null,
       kind: 'user',
       name,
-      description,
+      description: '',
       imageUrl,
       plotId,
       roomId: roomId || getRoomId(),
-      source: 'room-current-profile-card',
+      source: 'room-user-message-avatar',
       updatedAt: Date.now(),
     };
   }
 
   function collectSelectedUserProfileFromDialog(fallbackProfile = null) {
-    const group = qs('[role="group"][aria-label="My chat profiles"]');
-    const root = getProfileHubRoot();
+    const dialog =
+      qs('#portal-container section[role="dialog"][aria-label="대화 프로필"]') ||
+      qs('section[role="dialog"][aria-label="대화 프로필"]');
 
-    if (!group || !root) {
+    if (!dialog) {
       if (fallbackProfile) return fallbackProfile;
       throw new Error('대화 프로필 창을 찾지 못했어.');
     }
 
-    const items = qsa('[data-sentry-component="ChatProfileListItem"]', group);
+    const items = qsa('[data-sentry-component="ChatProfileListItem"]', dialog);
     if (!items.length) {
       if (fallbackProfile) return fallbackProfile;
-      throw new Error('프로필 목록을 찾지 못했어.');
+      throw new Error('대화 프로필 목록을 찾지 못했어.');
     }
 
+    // 현재 선택된 프로필은 "추천 대화 프로필" 영역에 있을 수도 있다.
+    // 실제 DOM에서는 선택된 항목의 메인 버튼이 disabled이고 체크 배지가 붙는다.
     let active = items.find(item => {
       const selectedMarker = qs(
-        '.kt-profile-hub-selected, .bg-primary-400, [aria-checked="true"], [data-state="checked"]',
+        '.kt-profile-hub-selected, div[class*="bg-primary-400"], [aria-checked="true"], [data-state="checked"]',
         item
       );
-      const disabledButton = qsa('button', item).some(btn => btn.disabled);
-      return !!selectedMarker || disabledButton;
+      const mainButton = Array.from(item.children || []).find(el => el?.tagName === 'BUTTON');
+      return !!selectedMarker || !!mainButton?.disabled;
     });
 
-    // 체크 마커 구조가 바뀐 경우, 대화방에서 보이던 현재 프로필과
-    // 이름/이미지가 같은 항목을 현재 프로필로 잡는다.
     if (!active && fallbackProfile) {
       const fallbackName = cleanText(fallbackProfile.name || '');
       const fallbackImage = stripImageTransform(fallbackProfile.imageUrl || '');
@@ -411,7 +408,7 @@
 
     if (!active) {
       if (fallbackProfile) return fallbackProfile;
-      throw new Error('현재 사용중인 프로필을 찾지 못했어.');
+      throw new Error('현재 사용중인 대화 프로필을 찾지 못했어.');
     }
 
     const name =
@@ -430,8 +427,11 @@
       fallbackProfile?.imageUrl ||
       '';
 
-    const editLabel = qs('button[aria-label^="edit-"]', active)?.getAttribute('aria-label') || '';
-    const id = editLabel.startsWith('edit-') ? editLabel.slice(5) : (fallbackProfile?.id || null);
+    const editLabel =
+      qs('button[aria-label^="edit-"]', active)?.getAttribute('aria-label') || '';
+    const id = editLabel.startsWith('edit-')
+      ? editLabel.slice(5)
+      : (fallbackProfile?.id || null);
 
     const profile = {
       ...fallbackProfile,
@@ -445,24 +445,6 @@
     };
 
     save(CONFIG.STORAGE.USER, profile);
-
-    const plotId = profile.plotId || getPlotIdFromUrl() || state.activePlotId || null;
-    const roomId = profile.roomId || getRoomId();
-
-    if (plotId) {
-      upsertPlotEntry(plotId, {
-        userProfile: profile,
-        rooms: roomId && roomId !== 'manual-room'
-          ? {
-              [roomId]: {
-                roomId,
-                lastUsedAt: Date.now(),
-              },
-            }
-          : {},
-      });
-    }
-
     return profile;
   }
 
@@ -1184,7 +1166,17 @@
   function placeInlineCard(card, info = {}, allowFallback = false) {
     const anchorEl = findAnchorElement(info.anchor, allowFallback);
     const host = getAnchorHost(anchorEl);
-    if (!host?.parentNode) return false;
+    if (!host?.parentNode) {
+      if (allowFallback) {
+        const notice = qs('[data-testid="plugin-notice-slot"]');
+        if (notice) {
+          notice.appendChild(card);
+          card.style.display = '';
+          return true;
+        }
+      }
+      return false;
+    }
 
     if (card.previousElementSibling !== host || card.parentNode !== host.parentNode) {
       host.insertAdjacentElement('afterend', card);
@@ -1207,8 +1199,8 @@
         return;
       }
 
-      const placed = placeInlineCard(card, info, attempt >= 16);
-      if (placed || attempt >= 20) {
+      const placed = placeInlineCard(card, info, attempt >= 6);
+      if (placed || attempt >= 10) {
         clearInterval(timer);
         state.inlineMountTimers.delete(key);
       }
@@ -1635,6 +1627,7 @@
 
     const store = getPlotStore();
     const entries = Object.entries(store)
+      .filter(([plotId]) => !!plotId)
       .sort(([, a], [, b]) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
     root.innerHTML = '';
@@ -1654,23 +1647,18 @@
       btn.dataset.zsPlotId = plotId;
       btn.title = plotId;
 
-      if (plotId === activePlotId) {
-        btn.classList.add('active');
-      }
+      const label = getPlotLabel(entry, plotId) || `플롯 ${plotId.slice(0, 6)}`;
+      btn.textContent = label;
 
-      const label = document.createElement('span');
-      label.className = 'zs-plot-tab-label';
-      label.textContent = getPlotLabel(entry, plotId);
+      btn.style.setProperty('font-size', '13px', 'important');
+      btn.style.setProperty('font-weight', '750', 'important');
+      btn.style.setProperty('line-height', '1.2', 'important');
+      btn.style.setProperty('opacity', '1', 'important');
+      btn.style.setProperty('visibility', 'visible', 'important');
+      btn.style.setProperty('-webkit-text-fill-color', plotId === activePlotId ? '#18181b' : '#e4e4e7', 'important');
+      btn.style.setProperty('color', plotId === activePlotId ? '#18181b' : '#e4e4e7', 'important');
 
-      const count = Array.isArray(entry?.character?.characters)
-        ? entry.character.characters.length
-        : (entry?.character ? 1 : 0);
-
-      const meta = document.createElement('span');
-      meta.className = 'zs-plot-tab-meta';
-      meta.textContent = count > 1 ? `${count}캐` : '';
-
-      btn.append(label, meta);
+      if (plotId === activePlotId) btn.classList.add('active');
       root.append(btn);
     }
   }
@@ -1910,6 +1898,11 @@
             <button type="button" class="primary" data-zs-action="send-relay">스냅샷 만들기</button>
           </div>
 
+          <div id="zs-handoff" class="zs-handoff" style="display:none">
+            <button type="button" data-zs-action="open-chatgpt">ChatGPT에서 이미지 생성</button>
+            <span>스냅샷은 저장됨 · 여기서 ChatGPT로 넘기면 됨</span>
+          </div>
+
           <div class="zs-result-wrap">
             <label>결과</label>
             <pre id="zs-result"></pre>
@@ -2005,21 +1998,40 @@
         return;
       }
 
+      if (action === 'open-chatgpt') {
+        if (!state.lastCreatedSnapshotInfo) {
+          flash('먼저 스냅샷을 만들어줘.');
+          return;
+        }
+        await openSnapshotInChatGPT(state.lastCreatedSnapshotInfo);
+        return;
+      }
+
       if (action === 'send-relay') {
         try {
           const draft = readFormToDraft();
           persistFromDraft(draft);
           state.resultBox.textContent = '전송 중...';
           const result = await sendDraftToRelay(draft);
+          state.lastCreatedSnapshotInfo = {
+            token: result.token,
+            snapshotUrl: result.getSnapshotUrl,
+            statusUrl: result.getStatusUrl,
+            roomId: draft.roomId || getRoomId(),
+          };
+
+          const handoff = qs('#zs-handoff', state.overlay);
+          if (handoff) handoff.style.display = 'flex';
+
           state.resultBox.textContent = [
-            '스냅샷 생성 완료',
+            '스냅샷 데이터 저장 완료',
             '',
             result.getSnapshotUrl || '',
             '',
-            '아래 대화 카드의 [ChatGPT 열기]를 누르면 요청문을 복사하고 ChatGPT를 열어.',
-            'ChatGPT에서 붙여넣어 ZETA Snapshot Generator를 실행하면 이미지 생성이 시작돼.'
+            '이미지 생성은 아직 시작 전이야.',
+            '바로 위 [ChatGPT에서 이미지 생성] 버튼을 누르면 요청문을 복사하고 ChatGPT를 열어.'
           ].join('\n');
-          flash('스냅샷 생성 완료');
+          flash('스냅샷 저장 완료');
         } catch (err) {
           console.error(err);
           state.resultBox.textContent = `오류:\n${String(err.message || err)}`;
@@ -2109,6 +2121,9 @@
       .join('\n');
 
     state.resultBox.textContent = '';
+    state.lastCreatedSnapshotInfo = null;
+    const handoff = qs('#zs-handoff', state.overlay);
+    if (handoff) handoff.style.display = 'none';
   }
 
   function readFormToDraft() {
@@ -2208,53 +2223,26 @@
   }
 
   function findUserProfileHubTrigger() {
-    const editCurrent = qs('button[aria-label="edit-my-plot-chat-profile"]');
-    const previous = editCurrent?.previousElementSibling;
-    if (previous?.tagName === 'BUTTON' && previous.offsetParent) {
-      return previous;
-    }
+    // 실제 대화방 DOM: RightTextContent 오른쪽 끝의 아바타 버튼을 누르면
+    // "대화 프로필" 바텀시트가 열린다.
+    const rows = qsa('[data-sentry-component="RightTextContent"]');
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const directButtons = Array.from(rows[i].children || [])
+        .filter(el => el?.tagName === 'BUTTON' && el.querySelector('img'));
+      if (directButtons.length) return directButtons[directButtons.length - 1];
 
-    const buttons = qsa('button').filter(btn => {
-      if (!btn.offsetParent) return false;
-      const img = btn.querySelector('img');
-      const src = img?.currentSrc || img?.src || '';
-      return /\/user-(?:plot-)?chat-profile-image\//.test(src);
-    });
-
-    return buttons[buttons.length - 1] || null;
-  }
-
-  function findProfileActionInOpenPanel() {
-    const root = qs('#portal-container') || document;
-    const buttons = qsa('button', root).filter(btn => btn.offsetParent);
-
-    return buttons.find(btn => {
-      const label = cleanText(
-        [
-          btn.getAttribute('aria-label') || '',
-          btn.getAttribute('title') || '',
-          btn.innerText || '',
-          btn.textContent || ''
-        ].join(' ')
-      );
-      return /대화\s*프로필|내\s*프로필|chat\s*profile|profile/i.test(label);
-    }) || null;
-  }
-
-  function openUserProfileHubFromRoom() {
-    const direct = findUserProfileHubTrigger();
-    if (direct) {
-      direct.click();
-      return 'direct';
-    }
-
-    const actionPanelButton = qs('[data-testid="action-panel-button"]');
-    if (actionPanelButton) {
-      actionPanelButton.click();
-      return 'action-panel';
+      const nested = qsa('button', rows[i]).find(btn => btn.querySelector('img'));
+      if (nested) return nested;
     }
 
     return null;
+  }
+
+  function openUserProfileHubFromRoom() {
+    const trigger = findUserProfileHubTrigger();
+    if (!trigger) return false;
+    trigger.click();
+    return true;
   }
 
   async function openCollectionFallback(error, session = {}) {
@@ -2319,7 +2307,12 @@
         });
 
         flash('1/3 캐릭터 프로필 완료 · 대화방으로 복귀');
-        location.href = session.roomUrl;
+        history.back();
+        setTimeout(() => {
+          if (/\/plots\/[^/?#]+\/profile/.test(location.pathname)) {
+            location.href = session.roomUrl;
+          }
+        }, 1400);
         return;
       }
 
@@ -2333,25 +2326,20 @@
           session.roomUserProfile ||
           null;
 
-        const group = qs('[role="group"][aria-label="My chat profiles"]');
-        if (group) {
-          setCollectSession({
-            ...session,
-            phase: 'wait-user-profile',
-            roomUserProfile,
-            profileOpenAt: Date.now(),
-          });
-          return;
-        }
+        const dialog =
+          qs('#portal-container section[role="dialog"][aria-label="대화 프로필"]') ||
+          qs('section[role="dialog"][aria-label="대화 프로필"]');
 
-        const openedBy = openUserProfileHubFromRoom();
-        if (!openedBy) {
-          throw new Error('대화 프로필을 여는 버튼을 찾지 못했어.');
+        if (!dialog) {
+          const opened = openUserProfileHubFromRoom();
+          if (!opened) {
+            throw new Error('대화방에서 유저 프로필 아바타 버튼을 찾지 못했어.');
+          }
         }
 
         setCollectSession({
           ...session,
-          phase: openedBy === 'action-panel' ? 'wait-action-panel-profile' : 'wait-user-profile',
+          phase: 'wait-user-profile',
           roomUserProfile,
           profileOpenAt: Date.now(),
         });
@@ -2361,47 +2349,15 @@
       }
 
       if (
-        session.phase === 'wait-action-panel-profile' &&
-        /\/rooms\/[^/?#]+/.test(location.pathname) &&
-        getRoomId() === session.roomId
-      ) {
-        const group = qs('[role="group"][aria-label="My chat profiles"]');
-        if (group) {
-          setCollectSession({
-            ...session,
-            phase: 'wait-user-profile',
-            profileOpenAt: Date.now(),
-          });
-          return;
-        }
-
-        const profileAction = findProfileActionInOpenPanel();
-        if (profileAction) {
-          profileAction.click();
-          setCollectSession({
-            ...session,
-            phase: 'wait-user-profile',
-            profileOpenAt: Date.now(),
-          });
-          return;
-        }
-
-        if (Date.now() - Number(session.profileOpenAt || 0) > 3000) {
-          throw new Error('액션 패널에서 대화 프로필 버튼을 찾지 못했어.');
-        }
-        return;
-      }
-
-      if (
         session.phase === 'wait-user-profile' &&
         /\/rooms\/[^/?#]+/.test(location.pathname) &&
         getRoomId() === session.roomId
       ) {
-        const group = qs('[role="group"][aria-label="My chat profiles"]');
+        const dialog =
+          qs('#portal-container section[role="dialog"][aria-label="대화 프로필"]') ||
+          qs('section[role="dialog"][aria-label="대화 프로필"]');
 
-        // 바텀시트가 뜨면 체크된 프로필을 우선 사용.
-        // 2.5초 안에 못 뜨더라도 대화방 현재 프로필 카드 정보로 계속 진행한다.
-        if (!group && Date.now() - Number(session.profileOpenAt || 0) < 2500) {
+        if (!dialog && Date.now() - Number(session.profileOpenAt || 0) < 4000) {
           return;
         }
 
@@ -2410,9 +2366,11 @@
           session.roomUserProfile ||
           null;
 
-        const selected = group
-          ? collectSelectedUserProfileFromDialog(fallbackProfile)
-          : fallbackProfile;
+        if (!dialog) {
+          throw new Error('유저 프로필 창이 열리지 않았어.');
+        }
+
+        const selected = collectSelectedUserProfileFromDialog(fallbackProfile);
 
         if (!selected) {
           throw new Error('현재 유저 프로필 정보를 찾지 못했어.');
@@ -2422,7 +2380,7 @@
           ...selected,
           plotId: session.plotId,
           roomId: session.roomId,
-          source: group ? 'room-selected-profile' : 'room-current-profile-card',
+          source: 'room-selected-profile',
           updatedAt: Date.now(),
         };
 
@@ -3137,6 +3095,33 @@
         font-weight:800;
       }
 
+      .zs-handoff{
+        margin-top:14px;
+        padding:10px;
+        border:1px solid rgba(255,255,255,.08);
+        border-radius:14px;
+        background:#202024;
+        align-items:center;
+        gap:10px;
+      }
+      .zs-handoff button{
+        flex:0 0 auto;
+        min-height:40px;
+        border:none;
+        border-radius:11px;
+        padding:9px 12px;
+        background:#f4f4f5;
+        color:#18181b;
+        font-size:12px;
+        font-weight:800;
+        cursor:pointer;
+      }
+      .zs-handoff span{
+        color:#a1a1aa;
+        font-size:10px;
+        line-height:1.4;
+      }
+
       .zs-result-wrap{
         margin-top:16px;
       }
@@ -3402,7 +3387,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.7 profile-hub collection + fallback popup + draggable launcher ready');
+    console.log('[ZETA Snapshot] v0.6.8 profile-hub collection + fallback popup + draggable launcher ready');
   }
 
   init();
