@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.4
+// @version      0.6.5
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -385,7 +385,7 @@
     const value = String(url || '');
     if (!value) return false;
     if (/default-profile|default_profile|placeholder|avatar-default/i.test(value)) return false;
-    return /\/user-plot-chat-profile-image\//.test(value);
+    return /\/user-(?:plot-)?chat-profile-image\//.test(value);
   }
 
   function extractUserProfileImageFromHtml(html) {
@@ -395,7 +395,7 @@
       .replace(/\\\//g, '/');
 
     const matches = normalized.match(
-      /https:\/\/image\.zeta-ai\.io\/user-plot-chat-profile-image\/[^"'<>\\\s)]+/g
+      /https:\/\/image\.zeta-ai\.io\/user-(?:plot-)?chat-profile-image\/[^"'<>\\\s)]+/g
     ) || [];
 
     const candidates = matches
@@ -409,14 +409,14 @@
     const name = cleanText(doc.querySelector('input[name="name"]')?.value || '');
     const description = String(doc.querySelector('textarea[name="description"]')?.value || '').trim();
 
-    const imgs = [...doc.querySelectorAll('img[alt="profile image"], img[src*="user-plot-chat-profile-image"]')];
+    const imgs = [...doc.querySelectorAll('img[alt="profile image"], img[src*="user-plot-chat-profile-image"], img[src*="user-chat-profile-image"]')];
     const imageUrl =
       imgs.map(img => imageUrlFromImg(img))
         .find(isUsableUserProfileImage) ||
       (isUsableUserProfileImage(fallbackImageUrl) ? stripImageTransform(fallbackImageUrl) : '');
 
     const imageProfileId =
-      imageUrl.match(/\/user-plot-chat-profile-image\/([^/]+)\//)?.[1] || null;
+      imageUrl.match(/\/user-(?:plot-)?chat-profile-image\/([^/]+)\//)?.[1] || null;
 
     if (!name && !description && !imageUrl) {
       throw new Error('현재 사용 프로필 편집 페이지에서 프로필 정보를 찾지 못했어.');
@@ -2003,11 +2003,21 @@
   }
 
   function findUserProfileHubTrigger() {
+    // 현재 사용 프로필 카드 오른쪽의 편집 버튼 바로 앞 버튼이
+    // 대화 프로필 허브를 여는 실제 트리거다.
+    const editCurrent = qs('button[aria-label="edit-my-plot-chat-profile"]');
+    const previous = editCurrent?.previousElementSibling;
+    if (previous?.tagName === 'BUTTON' && previous.offsetParent) {
+      return previous;
+    }
+
+    // ZETA가 이미지 경로를 user-chat-profile-image /
+    // user-plot-chat-profile-image 둘 중 하나로 쓰는 경우 모두 대응.
     const buttons = qsa('button').filter(btn => {
       if (!btn.offsetParent) return false;
       const img = btn.querySelector('img');
       const src = img?.currentSrc || img?.src || '';
-      return /\/user-plot-chat-profile-image\//.test(src);
+      return /\/user-(?:plot-)?chat-profile-image\//.test(src);
     });
 
     return buttons[buttons.length - 1] || null;
@@ -2370,7 +2380,6 @@
         height:50px;
         border:1px solid rgba(255,255,255,.12);
         border-radius:16px;
-        cursor:pointer;
         background:#18181b;
         color:#fff;
         box-shadow:0 10px 30px rgba(0,0,0,.35);
@@ -3039,7 +3048,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.4 profile-hub collection + fallback popup + draggable launcher ready');
+    console.log('[ZETA Snapshot] v0.6.5 profile-hub collection + fallback popup + draggable launcher ready');
   }
 
   init();
