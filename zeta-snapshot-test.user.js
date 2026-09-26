@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ZETA Snapshot Test Prototype
 // @namespace    zeta-snapshot-test
-// @version      0.5.0
-// @description  ZETA Snapshot collector/review/send/result persistence
+// @version      0.6.0
+// @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
 // @run-at       document-idle
@@ -1112,33 +1112,6 @@
         return;
       }
 
-      if (btn.dataset.zsInlineAction === 'upload') {
-        card.querySelector('input[type="file"]')?.click();
-      }
-    });
-
-    card.addEventListener('change', async e => {
-      const input = e.target.closest('input[type="file"]');
-      if (!input) return;
-      const file = input.files?.[0];
-      if (!file) return;
-
-      try {
-        const uploadBtn = card.querySelector('[data-zs-inline-action="upload"]');
-        if (uploadBtn) {
-          uploadBtn.disabled = true;
-          uploadBtn.textContent = '업로드 중...';
-        }
-
-        await uploadResultFileToRelay(info.token, file);
-        flash('결과 이미지 업로드 완료');
-        await refreshRoomSnapshot(roomId, true);
-      } catch (err) {
-        console.error('[ZETA Snapshot] result upload failed', err);
-        flash(`결과 업로드 실패: ${String(err.message || err)}`, 3500);
-      } finally {
-        input.value = '';
-      }
     });
 
     return card;
@@ -1160,7 +1133,6 @@
         </div>
         <div class="zs-inline-card-actions">
           <button type="button" data-zs-inline-action="refresh">새로고침</button>
-          <button type="button" data-zs-inline-action="upload">결과 업로드</button>
         </div>
       </div>
       ${resultImageUrl ? `
@@ -1169,11 +1141,10 @@
         <div class="zs-inline-waiting">
           ${status === 'failed'
             ? '생성에 실패했어.'
-            : 'ChatGPT에서 이미지 생성 후 결과가 저장되면 여기에 표시돼.'}
+            : 'ChatGPT 이미지 생성이 끝나면 MCP가 결과를 저장하고 여기에 자동 표시돼.'}
         </div>
       `}
       ${error ? `<div class="zs-inline-error">${cleanText(error)}</div>` : ''}
-      <input class="zs-inline-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
     `;
 
     // innerHTML 교체 후에도 위임 리스너는 card 자체에 남아 있음.
@@ -1843,7 +1814,7 @@
             result.getSnapshotUrl || '',
             '',
             'ChatGPT에서 위 스냅샷 URL을 ZETA Snapshot Generator에 전달해 이미지를 생성해줘.',
-            '결과가 Worker에 저장되면 현재 대화 아래 카드에 자동 표시돼.'
+            '생성된 이미지는 MCP가 Worker에 자동 저장하고 현재 대화 아래 카드에 표시돼.'
           ].join('\n');
           flash('스냅샷 생성 완료');
         } catch (err) {
@@ -2533,7 +2504,7 @@
     createLauncher();
     watchRoomNavigation();
     setTimeout(restoreSnapshotForCurrentRoom, 900);
-    console.log('[ZETA Snapshot] v0.5.0 ready');
+    console.log('[ZETA Snapshot] v0.6.0 MCP write-back ready');
   }
 
   init();
