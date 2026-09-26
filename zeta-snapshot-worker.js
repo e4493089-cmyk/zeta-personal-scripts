@@ -1,107 +1,2065 @@
-const TTL=24*60*60*1000;
-const MAX=10*1024*1024;
-const TYPES=new Set(['image/png','image/jpeg','image/webp','image/gif']);
-const ORIGIN='https://zeta-snapshot.kwillhs.workers.dev';
+const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000; // 서버 보관 24시간
 
-export default{async fetch(req,env){try{
-  if(req.method==='OPTIONS')return new Response(null,{status:204,headers:cors()});
-  const u=new URL(req.url),p=u.pathname.replace(/\/+$/,'')||'/',a=p.split('/').filter(Boolean);
-  if(p==='/mcp'){if(req.method!=='POST')return j({error:'Method not allowed'},405);return mcp(req,env)}
-  if(req.method==='GET'&&p==='/')return j({ok:true,service:'ZETA Snapshot Relay',version:3,mcp:'/mcp'});
-  if(req.method==='POST'&&a.length===1&&a[0]==='snapshots')return create(req,env);
-  if(a[0]==='snapshots'&&a[1]){
-    const t=a[1];
-    if(req.method==='GET'&&a.length===2)return getSnap(req,env,t);
-    if(req.method==='GET'&&a[2]==='status')return getStatus(env,t);
-    if(req.method==='PATCH'&&a[2]==='status')return setStatus(req,env,t);
-    if(req.method==='PUT'&&a[2]==='character-image')return upload(req,env,t,'character');
-    if(req.method==='GET'&&a[2]==='character-image')return image(env,t,'character');
-    if(req.method==='PUT'&&a[2]==='user-image')return upload(req,env,t,'user');
-    if(req.method==='GET'&&a[2]==='user-image')return image(env,t,'user');
-    if((req.method==='PUT'||req.method==='POST')&&a[2]==='result')return upload(req,env,t,'result');
-    if(req.method==='GET'&&a[2]==='image')return image(env,t,'result');
-    if(req.method==='DELETE'&&a.length===2)return del(env,t);
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;    // 이미지 10MB 제한
+
+
+
+export default {
+
+  async fetch(request, env) {
+
+    try {
+
+      // 브라우저 CORS preflight
+
+      if (request.method === "OPTIONS") {
+
+        return new Response(null, {
+
+          status: 204,
+
+          headers: corsHeaders(),
+
+        });
+
+      }
+
+
+
+      const url = new URL(request.url);
+
+      const path = url.pathname.replace(/\/+$/, "") || "/";
+
+      const parts = path.split("/").filter(Boolean);
+
+
+
+      // ─────────────────────────────
+
+      // MCP /mcp
+
+      // ChatGPT plugin tools
+
+      // ─────────────────────────────
+
+      if (path === "/mcp") {
+
+        if (request.method !== "POST") {
+
+          return json({ ok: false, error: "Method not allowed" }, 405);
+
+        }
+
+        return await handleMcp(request, env);
+
+      }
+
+
+
+      // ─────────────────────────────
+
+      // GET /
+
+      // 서버 살아있는지 확인
+
+      // ─────────────────────────────
+
+      if (request.method === "GET" && path === "/") {
+
+        return json({
+
+          ok: true,
+
+          service: "ZETA Snapshot Relay",
+
+          version: 3,
+
+          mcp: "/mcp",
+
+        });
+
+      }
+
+
+
+      // ─────────────────────────────
+
+      // POST /snapshots
+
+      // 새 스냅샷 요청 생성
+
+      // ─────────────────────────────
+
+      if (
+
+        request.method === "POST" &&
+
+        parts.length === 1 &&
+
+        parts[0] === "snapshots"
+
+      ) {
+
+        return await createSnapshot(request, env);
+
+      }
+
+
+
+      if (parts[0] === "snapshots" && parts.length >= 2) {
+
+        const token = parts[1];
+
+
+
+        // GET /snapshots/:token
+
+        if (request.method === "GET" && parts.length === 2) {
+
+          return await getSnapshot(request, env, token);
+
+        }
+
+
+
+        // GET /snapshots/:token/status
+
+        if (
+
+          request.method === "GET" &&
+
+          parts.length === 3 &&
+
+          parts[2] === "status"
+
+        ) {
+
+          return await getStatus(env, token);
+
+        }
+
+
+
+        // PATCH /snapshots/:token/status
+
+        if (
+
+          request.method === "PATCH" &&
+
+          parts.length === 3 &&
+
+          parts[2] === "status"
+
+        ) {
+
+          return await updateStatus(request, env, token);
+
+        }
+
+
+
+        // PUT /snapshots/:token/character-image
+
+        if (
+
+          request.method === "PUT" &&
+
+          parts.length === 3 &&
+
+          parts[2] === "character-image"
+
+        ) {
+
+          return await uploadImage(
+
+            request,
+
+            env,
+
+            token,
+
+            "character"
+
+          );
+
+        }
+
+
+
+        // GET /snapshots/:token/character-image
+
+        if (
+
+          request.method === "GET" &&
+
+          parts.length === 3 &&
+
+          parts[2] === "character-image"
+
+        ) {
+
+          return await getImage(env, token, "character");
+
+        }
+
+
+
+        // PUT /snapshots/:token/user-image
+
+        if (
+
+          request.method === "PUT" &&
+
+          parts.length === 3 &&
+
+          parts[2] === "user-image"
+
+        ) {
+
+          return await uploadImage(
+
+            request,
+
+            env,
+
+            token,
+
+            "user"
+
+          );
+
+        }
+
+
+
+        // GET /snapshots/:token/user-image
+
+        if (
+
+          request.method === "GET" &&
+
+          parts.length === 3 &&
+
+          parts[2] === "user-image"
+
+        ) {
+
+          return await getImage(env, token, "user");
+
+        }
+
+
+
+        // POST 또는 PUT /snapshots/:token/result
+
+        if (
+
+          (request.method === "POST" || request.method === "PUT") &&
+
+          parts.length === 3 &&
+
+          parts[2] === "result"
+
+        ) {
+
+          return await uploadImage(
+
+            request,
+
+            env,
+
+            token,
+
+            "result"
+
+          );
+
+        }
+
+
+
+        // GET /snapshots/:token/image
+
+        if (
+
+          request.method === "GET" &&
+
+          parts.length === 3 &&
+
+          parts[2] === "image"
+
+        ) {
+
+          return await getImage(env, token, "result");
+
+        }
+
+
+
+        // DELETE /snapshots/:token
+
+        if (request.method === "DELETE" && parts.length === 2) {
+
+          return await deleteSnapshot(env, token);
+
+        }
+
+      }
+
+
+
+      return json(
+
+        {
+
+          ok: false,
+
+          error: "Not found",
+
+        },
+
+        404
+
+      );
+
+    } catch (error) {
+
+      console.error(error);
+
+
+
+      return json(
+
+        {
+
+          ok: false,
+
+          error: "Internal server error",
+
+          detail: String(error?.message || error),
+
+        },
+
+        500
+
+      );
+
+    }
+
+  },
+
+};
+
+
+
+
+
+// ─────────────────────────────────
+
+// 새 요청 만들기
+
+// ─────────────────────────────────
+
+
+
+async function createSnapshot(request, env) {
+
+  const contentType = request.headers.get("content-type") || "";
+
+
+
+  if (!contentType.includes("application/json")) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Content-Type must be application/json",
+
+      },
+
+      415
+
+    );
+
   }
-  return j({error:'Not found'},404)
-}catch(e){console.error(e);return j({error:String(e?.message||e)},500)}}};
 
-async function create(req,env){
-  const b=await req.json().catch(()=>null);if(!b||typeof b!=='object')return j({error:'Invalid JSON body'},400);
-  const id=crypto.randomUUID(),token=rand(),now=Date.now(),exp=now+TTL,an=b.anchor||{};
-  await env.DB.prepare("INSERT INTO snapshots (id,token,client_id,room_id,anchor_message_id,anchor_hash,anchor_preview,messages_json,character_json,user_profile_json,character_image_key,user_image_key,result_image_key,result_mime,status,error_message,created_at,updated_at,expires_at) VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL,'pending',NULL,?,?,?)")
-    .bind(id,token,String(b.clientId||'anonymous'),String(b.roomId||'manual-room'),an.messageId||null,an.hash||null,an.preview||'',JSON.stringify(Array.isArray(b.messages)?b.messages:[]),JSON.stringify(b.character||{}),JSON.stringify(b.userProfile||{}),now,now,exp).run();
-  const o=new URL(req.url).origin;
-  return j({ok:true,snapshot:{id,token,roomId:String(b.roomId||'manual-room'),status:'pending',createdAt:now,updatedAt:now,expiresAt:exp,snapshotUrl:o+'/snapshots/'+encodeURIComponent(token),statusUrl:o+'/snapshots/'+encodeURIComponent(token)+'/status'}},201)
+
+
+  let data;
+
+
+
+  try {
+
+    data = await request.json();
+
+  } catch {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Invalid JSON",
+
+      },
+
+      400
+
+    );
+
+  }
+
+
+
+  const clientId = String(data.clientId || "").trim();
+
+  const roomId = String(data.roomId || "").trim();
+
+
+
+  if (!clientId) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "clientId is required",
+
+      },
+
+      400
+
+    );
+
+  }
+
+
+
+  if (!roomId) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "roomId is required",
+
+      },
+
+      400
+
+    );
+
+  }
+
+
+
+  const id = crypto.randomUUID();
+
+  const token = randomToken();
+
+
+
+  const now = Date.now();
+
+  const expiresAt = now + SNAPSHOT_TTL_MS;
+
+
+
+  const anchor = data.anchor || {};
+
+
+
+  await env.DB.prepare(`
+
+    INSERT INTO snapshots (
+
+      id,
+
+      token,
+
+      client_id,
+
+      room_id,
+
+
+
+      anchor_message_id,
+
+      anchor_hash,
+
+      anchor_preview,
+
+
+
+      messages_json,
+
+      character_json,
+
+      user_profile_json,
+
+
+
+      status,
+
+
+
+      created_at,
+
+      updated_at,
+
+      expires_at
+
+    )
+
+
+
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+  `)
+
+    .bind(
+
+      id,
+
+      token,
+
+      clientId,
+
+      roomId,
+
+
+
+      anchor.messageId || null,
+
+      anchor.hash || null,
+
+      anchor.preview || null,
+
+
+
+      JSON.stringify(data.messages || []),
+
+      JSON.stringify(data.character || null),
+
+      JSON.stringify(data.userProfile || null),
+
+
+
+      "pending",
+
+
+
+      now,
+
+      now,
+
+      expiresAt
+
+    )
+
+    .run();
+
+
+
+  return json(
+
+    {
+
+      ok: true,
+
+
+
+      snapshot: {
+
+        id,
+
+        token,
+
+        status: "pending",
+
+        expiresAt,
+
+      },
+
+    },
+
+    201
+
+  );
+
 }
 
-async function getSnap(req,env,t){const r=await row(env,t);if(!r)return j({error:'Snapshot not found'},404);if(expired(r))return j({error:'Snapshot expired'},410);return j({ok:true,snapshot:shape(r,new URL(req.url).origin)})}
-async function getStatus(env,t){const r=await row(env,t);if(!r)return j({error:'Snapshot not found'},404);if(expired(r))return j({error:'Snapshot expired'},410);return j({ok:true,token:t,status:r.status,error:r.error_message||null,resultImageUrl:r.result_image_key?'/snapshots/'+encodeURIComponent(t)+'/image':null,updatedAt:r.updated_at,expiresAt:r.expires_at})}
-async function setStatus(req,env,t){if(!await row(env,t))return j({error:'Snapshot not found'},404);const b=await req.json().catch(()=>({})),s=String(b.status||'');if(!new Set(['pending','processing','completed','failed']).has(s))return j({error:'Invalid status'},400);const now=Date.now(),e=b.error==null?null:String(b.error).slice(0,2000);await env.DB.prepare('UPDATE snapshots SET status=?,error_message=?,updated_at=? WHERE token=?').bind(s,e,now,t).run();return j({ok:true,token:t,status:s,error:e,updatedAt:now})}
-async function upload(req,env,t,k){const r=await row(env,t);if(!r)return j({error:'Snapshot not found'},404);if(expired(r))return j({error:'Snapshot expired'},410);const m=mime(req.headers.get('content-type'));if(!TYPES.has(m))return j({error:'Unsupported image type'},415);const b=await req.arrayBuffer();if(!b.byteLength)return j({error:'Empty image'},400);if(b.byteLength>MAX)return j({error:'Image too large'},413);return j(await store(env,t,r,k,b,m))}
-async function image(env,t,k){const r=await row(env,t);if(!r)return j({error:'Snapshot not found'},404);const key=k==='character'?r.character_image_key:k==='user'?r.user_image_key:r.result_image_key;if(!key)return j({error:'Image not found'},404);const o=await env.IMAGES.get(key);if(!o)return j({error:'Image not found'},404);const h=cors();h.set('Content-Type',k==='result'?(r.result_mime||o.httpMetadata?.contentType||'image/png'):(o.httpMetadata?.contentType||'image/png'));h.set('Cache-Control','private, max-age=300');return new Response(o.body,{headers:h})}
-async function del(env,t){const r=await row(env,t);if(!r)return j({error:'Snapshot not found'},404);for(const k of [r.character_image_key,r.user_image_key,r.result_image_key].filter(Boolean))await env.IMAGES.delete(k);await env.DB.prepare('DELETE FROM snapshots WHERE token=?').bind(t).run();return j({ok:true})}
 
-async function mcp(req,env){
-  const q=await req.json().catch(()=>null);if(!q||q.jsonrpc!=='2.0')return err(null,-32600,'Invalid Request');const id=q.id??null;
-  if(q.method==='initialize')return ok(id,{protocolVersion:q.params?.protocolVersion||'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'zeta-snapshot',version:'3.0.0'},instructions:'Read snapshots with get_snapshot. After generating an image, save it with save_snapshot_result using the same token and generated image file.'});
-  if(q.method==='notifications/initialized')return new Response(null,{status:204,headers:cors()});
-  if(q.method==='ping')return ok(id,{});
-  if(q.method==='tools/list')return ok(id,{tools:tools()});
-  if(q.method==='tools/call'){try{return ok(id,await call(env,q.params?.name,q.params?.arguments||{}))}catch(e){return ok(id,{content:[{type:'text',text:String(e?.message||e)}],structuredContent:{ok:false,error:String(e?.message||e)},isError:true})}}
-  return err(id,-32601,'Method not found')
+
+
+
+// ─────────────────────────────────
+
+// 요청 정보 읽기
+
+// ChatGPT 쪽에서 이걸 읽게 됨
+
+// ─────────────────────────────────
+
+
+
+async function getSnapshot(request, env, token) {
+
+  const row = await findSnapshot(env, token);
+
+
+
+  if (!row) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot not found",
+
+      },
+
+      404
+
+    );
+
+  }
+
+
+
+  if (isExpired(row)) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot expired",
+
+      },
+
+      410
+
+    );
+
+  }
+
+
+
+  const base = new URL(request.url).origin;
+
+
+
+  return json({
+
+    ok: true,
+
+
+
+    snapshot: {
+
+      id: row.id,
+
+
+
+      clientId: row.client_id,
+
+      roomId: row.room_id,
+
+
+
+      anchor: {
+
+        messageId: row.anchor_message_id,
+
+        hash: row.anchor_hash,
+
+        preview: row.anchor_preview,
+
+      },
+
+
+
+      messages: safeJson(row.messages_json, []),
+
+      character: safeJson(row.character_json, null),
+
+      userProfile: safeJson(row.user_profile_json, null),
+
+
+
+      characterImageUrl:
+
+        row.character_image_key
+
+          ? `${base}/snapshots/${encodeURIComponent(token)}/character-image`
+
+          : null,
+
+
+
+      userImageUrl:
+
+        row.user_image_key
+
+          ? `${base}/snapshots/${encodeURIComponent(token)}/user-image`
+
+          : null,
+
+
+
+      resultImageUrl:
+
+        row.result_image_key
+
+          ? `${base}/snapshots/${encodeURIComponent(token)}/image`
+
+          : null,
+
+
+
+      status: row.status,
+
+      error: row.error_message,
+
+
+
+      createdAt: row.created_at,
+
+      updatedAt: row.updated_at,
+
+      expiresAt: row.expires_at,
+
+    },
+
+  });
+
 }
 
-function tools(){
-  const file={type:'object',properties:{download_url:{type:'string'},file_id:{type:'string'},mime_type:{type:'string'},file_name:{type:'string'}},required:['download_url','file_id'],additionalProperties:false};
-  const oneToken={type:'object',properties:{token:{type:'string',minLength:1}},required:['token'],additionalProperties:false};
+
+
+
+
+// ─────────────────────────────────
+
+// 상태 읽기
+
+// 제타가 생성 완료됐는지 확인
+
+// ─────────────────────────────────
+
+
+
+async function getStatus(env, token) {
+
+  const row = await findSnapshot(env, token);
+
+
+
+  if (!row) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot not found",
+
+      },
+
+      404
+
+    );
+
+  }
+
+
+
+  if (isExpired(row)) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot expired",
+
+      },
+
+      410
+
+    );
+
+  }
+
+
+
+  return json({
+
+    ok: true,
+
+
+
+    id: row.id,
+
+    status: row.status,
+
+    hasResult: Boolean(row.result_image_key),
+
+
+
+    error: row.error_message || null,
+
+
+
+    updatedAt: row.updated_at,
+
+    expiresAt: row.expires_at,
+
+  });
+
+}
+
+
+
+
+
+// ─────────────────────────────────
+
+// 상태 변경
+
+// pending → processing / failed
+
+// ─────────────────────────────────
+
+
+
+async function updateStatus(request, env, token) {
+
+  const row = await findSnapshot(env, token);
+
+
+
+  if (!row) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot not found",
+
+      },
+
+      404
+
+    );
+
+  }
+
+
+
+  let data;
+
+
+
+  try {
+
+    data = await request.json();
+
+  } catch {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Invalid JSON",
+
+      },
+
+      400
+
+    );
+
+  }
+
+
+
+  const allowed = new Set([
+
+    "pending",
+
+    "processing",
+
+    "failed",
+
+  ]);
+
+
+
+  if (!allowed.has(data.status)) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Invalid status",
+
+      },
+
+      400
+
+    );
+
+  }
+
+
+
+  const now = Date.now();
+
+
+
+  await env.DB.prepare(`
+
+    UPDATE snapshots
+
+    SET
+
+      status = ?,
+
+      error_message = ?,
+
+      updated_at = ?
+
+    WHERE token = ?
+
+  `)
+
+    .bind(
+
+      data.status,
+
+      data.error || null,
+
+      now,
+
+      token
+
+    )
+
+    .run();
+
+
+
+  return json({
+
+    ok: true,
+
+    status: data.status,
+
+  });
+
+}
+
+
+
+
+
+// ─────────────────────────────────
+
+// 이미지 업로드
+
+// character / user / result
+
+// ─────────────────────────────────
+
+
+
+async function uploadImage(request, env, token, type) {
+
+  const row = await findSnapshot(env, token);
+
+
+
+  if (!row) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot not found",
+
+      },
+
+      404
+
+    );
+
+  }
+
+
+
+  if (isExpired(row)) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot expired",
+
+      },
+
+      410
+
+    );
+
+  }
+
+
+
+  const mime =
+
+    (request.headers.get("content-type") || "")
+
+      .split(";")[0]
+
+      .trim()
+
+      .toLowerCase();
+
+
+
+  const allowed = new Set([
+
+    "image/png",
+
+    "image/jpeg",
+
+    "image/webp",
+
+    "image/gif",
+
+  ]);
+
+
+
+  if (!allowed.has(mime)) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Only PNG, JPEG, WEBP and GIF are allowed",
+
+      },
+
+      415
+
+    );
+
+  }
+
+
+
+  const bytes = await request.arrayBuffer();
+
+
+
+  if (bytes.byteLength > MAX_IMAGE_BYTES) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Image exceeds 10 MB",
+
+      },
+
+      413
+
+    );
+
+  }
+
+
+
+  const extension = extensionFromMime(mime);
+
+
+
+  const key =
+
+    `snapshots/${row.id}/${type}-${crypto.randomUUID()}.${extension}`;
+
+
+
+  const oldKey =
+
+    type === "character"
+
+      ? row.character_image_key
+
+      : type === "user"
+
+        ? row.user_image_key
+
+        : row.result_image_key;
+
+
+
+  await env.IMAGES.put(key, bytes, {
+
+    httpMetadata: {
+
+      contentType: mime,
+
+    },
+
+  });
+
+
+
+  // 새 이미지가 정상적으로 올라간 뒤 이전 파일 삭제
+
+  if (oldKey) {
+
+    try {
+
+      await env.IMAGES.delete(oldKey);
+
+    } catch (e) {
+
+      console.warn("Could not delete old image:", e);
+
+    }
+
+  }
+
+
+
+  const now = Date.now();
+
+
+
+  if (type === "character") {
+
+    await env.DB.prepare(`
+
+      UPDATE snapshots
+
+      SET
+
+        character_image_key = ?,
+
+        updated_at = ?
+
+      WHERE token = ?
+
+    `)
+
+      .bind(key, now, token)
+
+      .run();
+
+  }
+
+
+
+  if (type === "user") {
+
+    await env.DB.prepare(`
+
+      UPDATE snapshots
+
+      SET
+
+        user_image_key = ?,
+
+        updated_at = ?
+
+      WHERE token = ?
+
+    `)
+
+      .bind(key, now, token)
+
+      .run();
+
+  }
+
+
+
+  if (type === "result") {
+
+    await env.DB.prepare(`
+
+      UPDATE snapshots
+
+      SET
+
+        result_image_key = ?,
+
+        result_mime = ?,
+
+        status = 'completed',
+
+        error_message = NULL,
+
+        updated_at = ?
+
+      WHERE token = ?
+
+    `)
+
+      .bind(
+
+        key,
+
+        mime,
+
+        now,
+
+        token
+
+      )
+
+      .run();
+
+  }
+
+
+
+  return json({
+
+    ok: true,
+
+    type,
+
+    status:
+
+      type === "result"
+
+        ? "completed"
+
+        : row.status,
+
+  });
+
+}
+
+
+
+
+
+// ─────────────────────────────────
+
+// R2 이미지 읽기
+
+// ─────────────────────────────────
+
+
+
+async function getImage(env, token, type) {
+
+  const row = await findSnapshot(env, token);
+
+
+
+  if (!row) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot not found",
+
+      },
+
+      404
+
+    );
+
+  }
+
+
+
+  if (isExpired(row)) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot expired",
+
+      },
+
+      410
+
+    );
+
+  }
+
+
+
+  const key =
+
+    type === "character"
+
+      ? row.character_image_key
+
+      : type === "user"
+
+        ? row.user_image_key
+
+        : row.result_image_key;
+
+
+
+  if (!key) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Image not found",
+
+      },
+
+      404
+
+    );
+
+  }
+
+
+
+  const object = await env.IMAGES.get(key);
+
+
+
+  if (!object) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Image not found in storage",
+
+      },
+
+      404
+
+    );
+
+  }
+
+
+
+  const headers = new Headers(corsHeaders());
+
+
+
+  object.writeHttpMetadata(headers);
+
+
+
+  headers.set("etag", object.httpEtag);
+
+  headers.set("Cache-Control", "private, max-age=300");
+
+
+
+  return new Response(object.body, {
+
+    status: 200,
+
+    headers,
+
+  });
+
+}
+
+
+
+
+
+// ─────────────────────────────────
+
+// 요청 삭제
+
+// D1 + R2 같이 지움
+
+// ─────────────────────────────────
+
+
+
+async function deleteSnapshot(env, token) {
+
+  const row = await findSnapshot(env, token);
+
+
+
+  if (!row) {
+
+    return json(
+
+      {
+
+        ok: false,
+
+        error: "Snapshot not found",
+
+      },
+
+      404
+
+    );
+
+  }
+
+
+
+  const keys = [
+
+    row.character_image_key,
+
+    row.user_image_key,
+
+    row.result_image_key,
+
+  ].filter(Boolean);
+
+
+
+  if (keys.length) {
+
+    await Promise.all(
+
+      keys.map((key) =>
+
+        env.IMAGES.delete(key).catch(() => null)
+
+      )
+
+    );
+
+  }
+
+
+
+  await env.DB.prepare(`
+
+    DELETE FROM snapshots
+
+    WHERE token = ?
+
+  `)
+
+    .bind(token)
+
+    .run();
+
+
+
+  return json({
+
+    ok: true,
+
+    deleted: true,
+
+  });
+
+}
+
+
+
+
+
+// ─────────────────────────────────
+// MCP server for ChatGPT plugin
+// ─────────────────────────────────
+
+const MCP_ORIGIN = "https://zeta-snapshot.kwillhs.workers.dev";
+
+async function handleMcp(request, env) {
+  let rpc;
+  try { rpc = await request.json(); }
+  catch { return mcpError(null, -32700, "Parse error"); }
+
+  if (!rpc || rpc.jsonrpc !== "2.0") {
+    return mcpError(rpc?.id ?? null, -32600, "Invalid Request");
+  }
+
+  const id = rpc.id ?? null;
+
+  if (rpc.method === "initialize") {
+    return mcpOk(id, {
+      protocolVersion: rpc.params?.protocolVersion || "2025-06-18",
+      capabilities: { tools: {} },
+      serverInfo: { name: "zeta-snapshot", version: "3.0.0" },
+      instructions: "Read snapshots with get_snapshot. After generating an image, save it with save_snapshot_result using the same token and generated image file."
+    });
+  }
+
+  if (rpc.method === "notifications/initialized") {
+    return new Response(null, { status: 204, headers: corsHeaders() });
+  }
+
+  if (rpc.method === "ping") return mcpOk(id, {});
+  if (rpc.method === "tools/list") return mcpOk(id, { tools: getMcpTools() });
+
+  if (rpc.method === "tools/call") {
+    try {
+      return mcpOk(id, await callMcpTool(env, rpc.params?.name, rpc.params?.arguments || {}));
+    } catch (error) {
+      const message = String(error?.message || error);
+      return mcpOk(id, {
+        content: [{ type: "text", text: message }],
+        structuredContent: { ok: false, error: message },
+        isError: true
+      });
+    }
+  }
+
+  return mcpError(id, -32601, "Method not found");
+}
+
+function getMcpTools() {
+  const tokenSchema = {
+    type: "object",
+    properties: { token: { type: "string", minLength: 1 } },
+    required: ["token"],
+    additionalProperties: false
+  };
+
+  const openAiFileSchema = {
+    type: "object",
+    properties: {
+      download_url: { type: "string" },
+      file_id: { type: "string" },
+      mime_type: { type: "string" },
+      file_name: { type: "string" }
+    },
+    required: ["download_url", "file_id"],
+    additionalProperties: false
+  };
+
   return [
-    {name:'get_snapshot',title:'Get ZETA snapshot',description:'Load one ZETA snapshot by token, including characters, user profile, messages, style and stored image URLs.',inputSchema:oneToken,annotations:{readOnlyHint:true,openWorldHint:false,destructiveHint:false}},
-    {name:'get_snapshot_status',title:'Get ZETA snapshot status',description:'Read the current status and result URL for one snapshot.',inputSchema:oneToken,annotations:{readOnlyHint:true,openWorldHint:false,destructiveHint:false}},
-    {name:'get_snapshot_reference_images',title:'Get ZETA snapshot reference images',description:'Return stored character and user reference images for image generation.',inputSchema:oneToken,annotations:{readOnlyHint:true,openWorldHint:false,destructiveHint:false}},
-    {name:'save_snapshot_result',title:'Save generated ZETA snapshot image',description:'Persist the generated image for a ZETA snapshot after image generation so the ZETA client can display it automatically.',inputSchema:{type:'object',$defs:{OpenAIFile:file},properties:{token:{type:'string',minLength:1},image:{$ref:'#/$defs/OpenAIFile'}},required:['token','image'],additionalProperties:false},annotations:{readOnlyHint:false,openWorldHint:true,destructiveHint:false},_meta:{'openai/fileParams':['image'],'openai/toolInvocation/invoking':'ZETA에 생성 이미지를 저장하는 중','openai/toolInvocation/invoked':'ZETA에 생성 이미지를 저장했어요'}}
-  ]
+    {
+      name: "get_snapshot",
+      title: "Get ZETA snapshot",
+      description: "Load one ZETA snapshot by token, including characters, user profile, messages, style settings, and stored image URLs.",
+      inputSchema: tokenSchema,
+      annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false }
+    },
+    {
+      name: "get_snapshot_status",
+      title: "Get ZETA snapshot status",
+      description: "Read the current processing status and generated result URL for one ZETA snapshot.",
+      inputSchema: tokenSchema,
+      annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false }
+    },
+    {
+      name: "get_snapshot_reference_images",
+      title: "Get ZETA snapshot reference images",
+      description: "Return stored character and user reference images for image generation.",
+      inputSchema: tokenSchema,
+      annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false }
+    },
+    {
+      name: "save_snapshot_result",
+      title: "Save generated ZETA snapshot image",
+      description: "Persist a generated image to the same ZETA snapshot so the ZETA client can display it automatically.",
+      inputSchema: {
+        type: "object",
+        $defs: { OpenAIFile: openAiFileSchema },
+        properties: {
+          token: { type: "string", minLength: 1 },
+          image: { $ref: "#/$defs/OpenAIFile" }
+        },
+        required: ["token", "image"],
+        additionalProperties: false
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
+      _meta: {
+        "openai/fileParams": ["image"],
+        "openai/toolInvocation/invoking": "ZETA에 생성 이미지를 저장하는 중",
+        "openai/toolInvocation/invoked": "ZETA에 생성 이미지를 저장했어요"
+      }
+    }
+  ];
 }
 
-async function call(env,n,a){
-  if(n==='get_snapshot')return mGet(env,a);
-  if(n==='get_snapshot_status')return mStatus(env,a);
-  if(n==='get_snapshot_reference_images')return mRefs(env,a);
-  if(n==='save_snapshot_result')return mSave(env,a);
-  throw new Error('Unknown tool: '+n)
-}
-async function mGet(env,a){const t=need(a),r=await row(env,t);if(!r)throw new Error('Snapshot not found');if(expired(r))throw new Error('Snapshot expired');const s=shape(r,ORIGIN);return {content:[{type:'text',text:JSON.stringify(s)}],structuredContent:s,isError:false}}
-async function mStatus(env,a){const t=need(a),r=await row(env,t);if(!r)throw new Error('Snapshot not found');const x={token:t,status:r.status,error:r.error_message||null,resultImageUrl:r.result_image_key?ORIGIN+'/snapshots/'+encodeURIComponent(t)+'/image':null,updatedAt:r.updated_at,expiresAt:r.expires_at};return {content:[{type:'text',text:JSON.stringify(x)}],structuredContent:x,isError:false}}
-async function mRefs(env,a){const t=need(a),r=await row(env,t);if(!r)throw new Error('Snapshot not found');const c=[],refs=[];for(const [kind,key] of [['character',r.character_image_key],['user',r.user_image_key]]){if(!key)continue;const o=await env.IMAGES.get(key);if(!o)continue;const b=new Uint8Array(await o.arrayBuffer()),m=o.httpMetadata?.contentType||'image/png';c.push({type:'image',data:b64(b),mimeType:m});refs.push({kind,mimeType:m,sizeBytes:b.byteLength})}if(!c.length)c.push({type:'text',text:'No stored reference images.'});return {content:c,structuredContent:{token:t,references:refs},isError:false}}
-async function mSave(env,a){
-  const t=need(a),f=a?.image;if(!f||typeof f!=='object')throw new Error('Generated image file is required');if(!String(f.file_id||'').startsWith('file_'))throw new Error('Invalid ChatGPT file reference');
-  let u;try{u=new URL(String(f.download_url||''))}catch{throw new Error('Invalid image download URL')}if(u.protocol!=='https:')throw new Error('Image download URL must use HTTPS');
-  const r=await row(env,t);if(!r)throw new Error('Snapshot not found');if(expired(r))throw new Error('Snapshot expired');
-  await env.DB.prepare("UPDATE snapshots SET status='processing',error_message=NULL,updated_at=? WHERE token=?").bind(Date.now(),t).run();
-  const res=await fetch(u.toString(),{redirect:'follow'});if(!res.ok){await fail(env,t,'Generated image download failed: '+res.status);throw new Error('Generated image download failed: '+res.status)}
-  const m=mime(f.mime_type||res.headers.get('content-type'));if(!TYPES.has(m)){await fail(env,t,'Unsupported image type: '+m);throw new Error('Unsupported generated image type')}
-  const b=await res.arrayBuffer();if(!b.byteLength){await fail(env,t,'Generated image was empty');throw new Error('Generated image was empty')}if(b.byteLength>MAX){await fail(env,t,'Generated image was too large');throw new Error('Generated image too large')}
-  await store(env,t,r,'result',b,m);const url=ORIGIN+'/snapshots/'+encodeURIComponent(t)+'/image';
-  return {content:[{type:'text',text:'Saved generated image for ZETA snapshot.'}],structuredContent:{ok:true,token:t,status:'completed',resultImageUrl:url,sizeBytes:b.byteLength,mimeType:m},isError:false}
+async function callMcpTool(env, name, args) {
+  if (name === "get_snapshot") return mcpGetSnapshot(env, args);
+  if (name === "get_snapshot_status") return mcpGetSnapshotStatus(env, args);
+  if (name === "get_snapshot_reference_images") return mcpGetSnapshotReferenceImages(env, args);
+  if (name === "save_snapshot_result") return mcpSaveSnapshotResult(env, args);
+  throw new Error("Unknown tool: " + name);
 }
 
-async function store(env,t,r,k,b,m){const ext=m==='image/jpeg'?'jpg':m==='image/webp'?'webp':m==='image/gif'?'gif':'png',key='snapshots/'+r.id+'/'+k+'.'+ext;await env.IMAGES.put(key,b,{httpMetadata:{contentType:m}});const now=Date.now();
-  if(k==='character')await env.DB.prepare('UPDATE snapshots SET character_image_key=?,updated_at=? WHERE token=?').bind(key,now,t).run();
-  else if(k==='user')await env.DB.prepare('UPDATE snapshots SET user_image_key=?,updated_at=? WHERE token=?').bind(key,now,t).run();
-  else if(k==='result')await env.DB.prepare("UPDATE snapshots SET result_image_key=?,result_mime=?,status='completed',error_message=NULL,updated_at=? WHERE token=?").bind(key,m,now,t).run();
-  else throw new Error('Invalid image kind');
-  return {ok:true,key,kind:k,mimeType:m,sizeBytes:b.byteLength,updatedAt:now}
+function requireMcpToken(args) {
+  const token = String(args?.token || "").trim();
+  if (!token) throw new Error("token is required");
+  return token;
 }
-async function fail(env,t,e){await env.DB.prepare("UPDATE snapshots SET status='failed',error_message=?,updated_at=? WHERE token=?").bind(String(e).slice(0,2000),Date.now(),t).run()}
-async function row(env,t){return env.DB.prepare('SELECT * FROM snapshots WHERE token=?').bind(t).first()}
-function shape(r,o){const ch=parse(r.character_json,{}),op=ch?.snapshotOptions||{};return {id:r.id,token:r.token,clientId:r.client_id,roomId:r.room_id,anchor:{messageId:r.anchor_message_id||null,hash:r.anchor_hash||null,preview:r.anchor_preview||''},messages:parse(r.messages_json,[]),character:ch,userProfile:parse(r.user_profile_json,{}),stylePreset:op.stylePreset??null,stylePrompt:op.stylePrompt??null,additionalInstructions:op.additionalInstructions??null,characterImageUrl:r.character_image_key?o+'/snapshots/'+encodeURIComponent(r.token)+'/character-image':null,userImageUrl:r.user_image_key?o+'/snapshots/'+encodeURIComponent(r.token)+'/user-image':null,resultImageUrl:r.result_image_key?o+'/snapshots/'+encodeURIComponent(r.token)+'/image':null,status:r.status,error:r.error_message||null,createdAt:r.created_at,updatedAt:r.updated_at,expiresAt:r.expires_at}}
-function need(a){const t=String(a?.token||'').trim();if(!/^[A-Za-z0-9_-]{16,200}$/.test(t))throw new Error('Invalid snapshot token');return t}
-function expired(r){return Number(r.expires_at||0)>0&&Number(r.expires_at)<Date.now()}
-function parse(v,d){try{return v?JSON.parse(v):d}catch{return d}}
-function mime(v){return String(v||'').split(';')[0].trim().toLowerCase()}
-function rand(){return b64url(crypto.getRandomValues(new Uint8Array(32)))}
-function b64(b){let s='';for(let i=0;i<b.length;i+=32768)s+=String.fromCharCode(...b.subarray(i,i+32768));return btoa(s)}
-function b64url(b){return b64(b).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/g,'')}
-function cors(){return new Headers({'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'GET,POST,PUT,PATCH,DELETE,OPTIONS','Access-Control-Allow-Headers':'Content-Type, Accept, Authorization, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Session-Id','Access-Control-Expose-Headers':'Content-Type, MCP-Protocol-Version, Mcp-Session-Id'})}
-function j(x,s=200){const h=cors();h.set('Content-Type','application/json; charset=utf-8');return new Response(JSON.stringify(x,null,2),{status:s,headers:h})}
-function ok(id,result){return j({jsonrpc:'2.0',id,result})}
-function err(id,code,message){return j({jsonrpc:'2.0',id,error:{code,message}})}
+
+function buildMcpSnapshot(row, token) {
+  const character = safeJson(row.character_json, null);
+  const userProfile = safeJson(row.user_profile_json, null);
+  const snapshotOptions = character && typeof character === "object"
+    ? character.snapshotOptions || {}
+    : {};
+
+  return {
+    id: row.id,
+    token,
+    clientId: row.client_id,
+    roomId: row.room_id,
+    anchor: {
+      messageId: row.anchor_message_id,
+      hash: row.anchor_hash,
+      preview: row.anchor_preview
+    },
+    messages: safeJson(row.messages_json, []),
+    character,
+    userProfile,
+    stylePreset: snapshotOptions.stylePreset || null,
+    stylePrompt: snapshotOptions.stylePrompt || null,
+    additionalInstructions: snapshotOptions.additionalInstructions || null,
+    characterImageUrl: row.character_image_key
+      ? MCP_ORIGIN + "/snapshots/" + encodeURIComponent(token) + "/character-image"
+      : null,
+    userImageUrl: row.user_image_key
+      ? MCP_ORIGIN + "/snapshots/" + encodeURIComponent(token) + "/user-image"
+      : null,
+    resultImageUrl: row.result_image_key
+      ? MCP_ORIGIN + "/snapshots/" + encodeURIComponent(token) + "/image"
+      : null,
+    status: row.status,
+    error: row.error_message || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    expiresAt: row.expires_at
+  };
+}
+
+async function mcpGetSnapshot(env, args) {
+  const token = requireMcpToken(args);
+  const row = await findSnapshot(env, token);
+  if (!row) throw new Error("Snapshot not found");
+  if (isExpired(row)) throw new Error("Snapshot expired");
+  const snapshot = buildMcpSnapshot(row, token);
+  return {
+    content: [{ type: "text", text: JSON.stringify(snapshot) }],
+    structuredContent: snapshot,
+    isError: false
+  };
+}
+
+async function mcpGetSnapshotStatus(env, args) {
+  const token = requireMcpToken(args);
+  const row = await findSnapshot(env, token);
+  if (!row) throw new Error("Snapshot not found");
+  if (isExpired(row)) throw new Error("Snapshot expired");
+
+  const status = {
+    token,
+    status: row.status,
+    error: row.error_message || null,
+    resultImageUrl: row.result_image_key
+      ? MCP_ORIGIN + "/snapshots/" + encodeURIComponent(token) + "/image"
+      : null,
+    updatedAt: row.updated_at,
+    expiresAt: row.expires_at
+  };
+
+  return {
+    content: [{ type: "text", text: JSON.stringify(status) }],
+    structuredContent: status,
+    isError: false
+  };
+}
+
+async function mcpGetSnapshotReferenceImages(env, args) {
+  const token = requireMcpToken(args);
+  const row = await findSnapshot(env, token);
+  if (!row) throw new Error("Snapshot not found");
+  if (isExpired(row)) throw new Error("Snapshot expired");
+
+  const content = [];
+  const references = [];
+
+  for (const [kind, key] of [
+    ["character", row.character_image_key],
+    ["user", row.user_image_key]
+  ]) {
+    if (!key) continue;
+    const object = await env.IMAGES.get(key);
+    if (!object) continue;
+
+    const bytes = new Uint8Array(await object.arrayBuffer());
+    const mimeType = object.httpMetadata?.contentType || "image/png";
+
+    content.push({
+      type: "image",
+      data: bytesToBase64(bytes),
+      mimeType
+    });
+
+    references.push({ kind, mimeType, sizeBytes: bytes.byteLength });
+  }
+
+  if (!content.length) {
+    content.push({ type: "text", text: "No stored reference images" });
+  }
+
+  return {
+    content,
+    structuredContent: { ok: true, references },
+    isError: false
+  };
+}
+
+async function mcpSaveSnapshotResult(env, args) {
+  const token = requireMcpToken(args);
+  const image = args?.image;
+
+  if (!image || typeof image !== "object") {
+    throw new Error("image file is required");
+  }
+
+  const downloadUrl = String(image.download_url || "").trim();
+  if (!downloadUrl) throw new Error("image.download_url is required");
+
+  let parsedUrl;
+  try { parsedUrl = new URL(downloadUrl); }
+  catch { throw new Error("Invalid image download URL"); }
+
+  if (parsedUrl.protocol !== "https:") {
+    throw new Error("Image download URL must use HTTPS");
+  }
+
+  const row = await findSnapshot(env, token);
+  if (!row) throw new Error("Snapshot not found");
+  if (isExpired(row)) throw new Error("Snapshot expired");
+
+  const response = await fetch(downloadUrl, { redirect: "follow" });
+  if (!response.ok) {
+    throw new Error("Could not download generated image (" + response.status + ")");
+  }
+
+  const headerMime = (response.headers.get("content-type") || "")
+    .split(";")[0].trim().toLowerCase();
+  const declaredMime = String(image.mime_type || "")
+    .split(";")[0].trim().toLowerCase();
+  const mime = declaredMime || headerMime;
+
+  if (!new Set(["image/png","image/jpeg","image/webp","image/gif"]).has(mime)) {
+    throw new Error("Generated file is not a supported image type");
+  }
+
+  const bytes = await response.arrayBuffer();
+  if (!bytes.byteLength) throw new Error("Generated image is empty");
+  if (bytes.byteLength > MAX_IMAGE_BYTES) {
+    throw new Error("Generated image exceeds 10 MB");
+  }
+
+  const uploadRequest = new Request(
+    MCP_ORIGIN + "/snapshots/" + encodeURIComponent(token) + "/result",
+    {
+      method: "PUT",
+      headers: { "Content-Type": mime },
+      body: bytes
+    }
+  );
+
+  const uploadResponse = await uploadImage(uploadRequest, env, token, "result");
+  const uploadResult = await uploadResponse.json();
+
+  if (!uploadResponse.ok || !uploadResult?.ok) {
+    throw new Error(uploadResult?.error || "Could not save generated image");
+  }
+
+  const result = {
+    ok: true,
+    token,
+    status: "completed",
+    resultImageUrl: MCP_ORIGIN + "/snapshots/" + encodeURIComponent(token) + "/image",
+    fileId: image.file_id || null
+  };
+
+  return {
+    content: [{ type: "text", text: JSON.stringify(result) }],
+    structuredContent: result,
+    isError: false
+  };
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
+function mcpOk(id, result) {
+  return json({ jsonrpc: "2.0", id, result });
+}
+
+function mcpError(id, code, message) {
+  return json({
+    jsonrpc: "2.0",
+    id,
+    error: { code, message }
+  });
+}
+
+
+// ─────────────────────────────────
+
+// DB helper
+
+// ─────────────────────────────────
+
+
+
+async function findSnapshot(env, token) {
+
+  return await env.DB.prepare(`
+
+    SELECT *
+
+    FROM snapshots
+
+    WHERE token = ?
+
+    LIMIT 1
+
+  `)
+
+    .bind(token)
+
+    .first();
+
+}
+
+
+
+
+
+// ─────────────────────────────────
+
+// Utils
+
+// ─────────────────────────────────
+
+
+
+function isExpired(row) {
+
+  return Number(row.expires_at) <= Date.now();
+
+}
+
+
+
+
+
+function safeJson(value, fallback) {
+
+  if (!value) return fallback;
+
+
+
+  try {
+
+    return JSON.parse(value);
+
+  } catch {
+
+    return fallback;
+
+  }
+
+}
+
+
+
+
+
+function extensionFromMime(mime) {
+
+  switch (mime) {
+
+    case "image/png":
+
+      return "png";
+
+
+
+    case "image/jpeg":
+
+      return "jpg";
+
+
+
+    case "image/webp":
+
+      return "webp";
+
+
+
+    case "image/gif":
+
+      return "gif";
+
+
+
+    default:
+
+      return "bin";
+
+  }
+
+}
+
+
+
+
+
+function randomToken(byteLength = 32) {
+
+  const bytes = new Uint8Array(byteLength);
+
+
+
+  crypto.getRandomValues(bytes);
+
+
+
+  let binary = "";
+
+
+
+  for (const byte of bytes) {
+
+    binary += String.fromCharCode(byte);
+
+  }
+
+
+
+  return btoa(binary)
+
+    .replace(/\+/g, "-")
+
+    .replace(/\//g, "_")
+
+    .replace(/=+$/g, "");
+
+}
+
+
+
+
+
+function corsHeaders() {
+
+  return {
+
+    "Access-Control-Allow-Origin": "*",
+
+    "Access-Control-Allow-Methods":
+
+      "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+
+    "Access-Control-Allow-Headers":
+
+      "Content-Type",
+
+    "Access-Control-Max-Age": "86400",
+
+  };
+
+}
+
+
+
+
+
+function json(data, status = 200) {
+
+  return new Response(
+
+    JSON.stringify(data, null, 2),
+
+    {
+
+      status,
+
+
+
+      headers: {
+
+        ...corsHeaders(),
+
+
+
+        "Content-Type":
+
+          "application/json; charset=utf-8",
+
+
+
+        "Cache-Control":
+
+          "no-store",
+
+      },
+
+    }
+
+  );
+
+}
