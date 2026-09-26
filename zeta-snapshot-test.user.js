@@ -1128,6 +1128,107 @@
     };
   }
 
+  function buildDraftFromPlotEntry(plotId) {
+    const entry = getPlotEntry(plotId);
+    if (!entry) return null;
+
+    const character = entry.character || {
+      id: plotId,
+      plotId,
+      kind: 'character',
+      name: '캐릭터',
+      description: '',
+      imageUrl: '',
+      characters: [],
+    };
+
+    const characters =
+      Array.isArray(character.characters) && character.characters.length
+        ? character.characters
+        : [character].filter(Boolean);
+
+    const roomEntries = Object.values(entry.rooms || {});
+    roomEntries.sort((a, b) => (b.lastUsedAt || 0) - (a.lastUsedAt || 0));
+    const latestRoomId = roomEntries[0]?.roomId || 'manual-room';
+
+    const isCurrentPlot =
+      plotId === getPlotIdFromUrl() ||
+      plotId === state.activePlotId;
+
+    const messages = isCurrentPlot ? collectRecentMessages() : [];
+
+    return {
+      source: 'plot-cache',
+      plotId,
+      roomId: latestRoomId,
+      anchor: buildAnchor(messages),
+      messages,
+      stylePreset: entry.stylePreset || '2d',
+      additionalInstructions: entry.additionalInstructions || CONFIG.DEFAULT_INSTRUCTIONS,
+      character: {
+        ...character,
+        id: plotId,
+        plotId,
+        characters,
+      },
+      characters,
+      userProfile: entry.userProfile || {
+        id: null,
+        kind: 'user',
+        name: '유저',
+        description: '',
+        imageUrl: '',
+        appearancePrompt: '',
+      },
+    };
+  }
+
+  function renderPlotTabs(activePlotId = null) {
+    const root = qs('#zs-plot-tabs', state.overlay);
+    if (!root) return;
+
+    const store = getPlotStore();
+    const entries = Object.entries(store)
+      .sort(([, a], [, b]) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+    root.innerHTML = '';
+
+    if (!entries.length) {
+      root.style.display = 'none';
+      return;
+    }
+
+    root.style.display = 'flex';
+
+    for (const [plotId, entry] of entries) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'zs-plot-tab';
+      btn.dataset.zsAction = 'switch-plot';
+      btn.dataset.zsPlotId = plotId;
+      btn.title = plotId;
+
+      if (plotId === activePlotId) {
+        btn.classList.add('active');
+      }
+
+      const label = document.createElement('span');
+      label.className = 'zs-plot-tab-label';
+      label.textContent = getPlotLabel(entry, plotId);
+
+      const count = Array.isArray(entry?.character?.characters)
+        ? entry.character.characters.length
+        : (entry?.character ? 1 : 0);
+
+      const meta = document.createElement('span');
+      meta.className = 'zs-plot-tab-meta';
+      meta.textContent = count > 1 ? `${count}캐` : '';
+
+      btn.append(label, meta);
+      root.append(btn);
+    }
+  }
+
   function renderCharacterSlots(characters) {
     const root = qs('#zs-character-slots', state.overlay);
     if (!root) return;
@@ -1282,8 +1383,10 @@
           <button class="zs-close" type="button">✕</button>
         </div>
 
+        <div id="zs-plot-tabs" class="zs-plot-tabs"></div>
+
         <div class="zs-tools">
-          <button type="button" data-zs-action="load-real">실제 초안 불러오기</button>
+          <button type="button" data-zs-action="load-real">현재 플롯 다시 수집</button>
           <button type="button" data-zs-action="mock-image-only">테스트: 프사만</button>
           <button type="button" data-zs-action="mock-full">테스트: 프사+설명</button>
           <button type="button" data-zs-action="mock-empty">테스트: 아무것도 없음</button>
@@ -1380,6 +1483,30 @@
       const action = btn.dataset.zsAction;
 
       if (action === 'close') return closeModal();
+
+      if (action === 'switch-plot') {
+        const plotId = btn.dataset.zsPlotId;
+        if (!plotId || plotId === state.activePlotId) return;
+
+        if (state.currentDraft) {
+          try {
+            persistFromDraft(readFormToDraft());
+          } catch (err) {
+            console.warn('[ZETA Snapshot] plot switch save failed', err);
+          }
+        }
+
+        const cachedDraft = buildDraftFromPlotEntry(plotId);
+        if (!cachedDraft) {
+          flash('저장된 플롯 정보를 찾지 못했어.');
+          return;
+        }
+
+        openDraft(cachedDraft);
+        flash(`${getPlotLabel(getPlotEntry(plotId), plotId)} 탭`);
+        return;
+      }
+
       if (action === 'load-real') {
         state.resultBox.textContent = '자동 수집 중...';
         try {
@@ -1473,6 +1600,9 @@
     ensureModal();
     openModal();
     state.currentDraft = structuredClone(draft);
+    state.activePlotId = getDraftPlotId(draft) || state.activePlotId || null;
+
+    renderPlotTabs(state.activePlotId);
 
     qs('#zs-style').value = draft.stylePreset || '2d';
     qs('#zs-room').value = draft.roomId || '';
@@ -1513,8 +1643,17 @@
 
     const previousGroup = state.currentDraft?.character || {};
 
+    const plotId =
+      state.activePlotId ||
+      getDraftPlotId(state.currentDraft) ||
+      getPlotIdFromUrl() ||
+      previousGroup.plotId ||
+      previousGroup.id ||
+      null;
+
     return {
       source: state.currentDraft?.source || 'form',
+      plotId,
       roomId: qs('#zs-room').value.trim() || getRoomId(),
       anchor,
       messages,
@@ -1523,8 +1662,8 @@
       characters,
       character: {
         ...previousGroup,
-        id: previousGroup.id || previousGroup.plotId || getPlotIdFromUrl() || null,
-        plotId: previousGroup.plotId || previousGroup.id || getPlotIdFromUrl() || null,
+        id: plotId,
+        plotId,
         kind: characters.length > 1 ? 'character_group' : 'character',
         name: primaryCharacter.name || '',
         description: primaryCharacter.description || '',
