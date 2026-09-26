@@ -1701,6 +1701,38 @@
       ...draft.userProfile,
       updatedAt: Date.now(),
     });
+
+    const plotId = getDraftPlotId(draft);
+    if (plotId) {
+      const roomId = draft.roomId || 'manual-room';
+      upsertPlotEntry(plotId, {
+        title:
+          draft.character?.plotTitle ||
+          getPlotEntry(plotId)?.title ||
+          draft.character?.name ||
+          '',
+        character: {
+          ...draft.character,
+          id: plotId,
+          plotId,
+          characters: draft.characters || draft.character?.characters || [],
+        },
+        userProfile: draft.userProfile,
+        stylePreset: draft.stylePreset,
+        additionalInstructions: draft.additionalInstructions,
+        rooms: roomId && roomId !== 'manual-room'
+          ? {
+              [roomId]: {
+                roomId,
+                lastUsedAt: Date.now(),
+              },
+            }
+          : {},
+      });
+
+      state.activePlotId = plotId;
+      renderPlotTabs(plotId);
+    }
   }
 
   function createLauncher() {
@@ -1731,6 +1763,10 @@
 
         if (type === 'user') {
           const profile = collectSelectedUserProfileFromDialog();
+          const plotId = getPlotIdFromUrl() || state.activePlotId || null;
+          if (plotId) {
+            upsertPlotEntry(plotId, { userProfile: profile });
+          }
           flash(`유저 저장: ${profile.name}`);
           return;
         }
@@ -1827,6 +1863,47 @@
         color:#111827;
         font-size:20px;
         cursor:pointer;
+      }
+      .zs-plot-tabs{
+        display:none;
+        gap:8px;
+        overflow-x:auto;
+        padding:10px 18px 0;
+        scrollbar-width:thin;
+      }
+      .zs-plot-tab{
+        flex:0 0 auto;
+        display:flex;
+        align-items:center;
+        gap:7px;
+        max-width:210px;
+        border:1px solid #dbe1e8;
+        background:#f8fafc;
+        color:#475569;
+        padding:8px 11px;
+        border-radius:999px;
+        cursor:pointer;
+        font-size:12px;
+        line-height:1;
+      }
+      .zs-plot-tab:hover{
+        background:#f1f5f9;
+      }
+      .zs-plot-tab.active{
+        background:#111827;
+        border-color:#111827;
+        color:#fff;
+      }
+      .zs-plot-tab-label{
+        max-width:150px;
+        overflow:hidden;
+        text-overflow:ellipsis;
+        white-space:nowrap;
+        font-weight:700;
+      }
+      .zs-plot-tab-meta{
+        font-size:10px;
+        opacity:.72;
       }
       .zs-tools{
         display:flex;
