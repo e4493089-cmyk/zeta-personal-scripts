@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.3
+// @version      0.6.4
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -24,6 +24,7 @@
       PLOTS: 'zetaSnapshot.plots.v1',
       SNAPSHOTS: 'zetaSnapshot.roomSnapshots.v1',
       COLLECT_SESSION: 'zetaSnapshot.collectSession.v1',
+      LAUNCHER_POS: 'zetaSnapshot.launcherPosition.v1',
       CLIENT_ID: 'zetaSnapshot.clientId.v1',
     },
     DEFAULT_INSTRUCTIONS: [
@@ -719,22 +720,28 @@
 
     const plotEntry = getPlotEntry(plotId);
 
-    let character = plotEntry?.character || legacyCharacter;
-    let userProfile = plotEntry?.userProfile || legacyUser;
+    let character = overrides.character || plotEntry?.character || legacyCharacter;
+    let userProfile = overrides.userProfile || plotEntry?.userProfile || legacyUser;
 
-    if (plotId) {
+    if (plotId && !overrides.skipAutoCollect && !overrides.character) {
       try {
         character = await collectCharacterProfileById(plotId);
       } catch (err) {
         console.warn('[ZETA Snapshot] character auto collect failed', err);
       }
+    }
 
-      if (roomId && roomId !== 'manual-room') {
-        try {
-          userProfile = await collectCurrentUserProfileFromEditPage(plotId, roomId);
-        } catch (err) {
-          console.warn('[ZETA Snapshot] user profile auto collect failed', err);
-        }
+    if (
+      plotId &&
+      roomId &&
+      roomId !== 'manual-room' &&
+      !overrides.skipAutoCollect &&
+      !overrides.userProfile
+    ) {
+      try {
+        userProfile = await collectCurrentUserProfileFromEditPage(plotId, roomId);
+      } catch (err) {
+        console.warn('[ZETA Snapshot] user profile auto collect failed', err);
       }
     }
 
@@ -1625,7 +1632,7 @@
         <div id="zs-plot-tabs" class="zs-plot-tabs"></div>
 
         <div class="zs-tools">
-          <button type="button" class="zs-refresh-btn" data-zs-action="load-real">↻ 현재 방 다시 수집</button>
+          <button type="button" class="zs-refresh-btn" data-zs-action="load-real">✨ 자동 수집</button>
           <span class="zs-autosave-badge">● 자동 저장</span>
         </div>
 
@@ -1970,7 +1977,7 @@
 
   async function startFullCollectionFromRoom() {
     if (!/\/rooms\/[^/?#]+/.test(location.pathname)) {
-      throw new Error('대화방에서 📷를 눌러줘.');
+      throw new Error('대화방에서 자동 수집을 시작해줘.');
     }
 
     const roomId = getRoomId();
@@ -1982,7 +1989,7 @@
     }
 
     setCollectSession({
-      phase: 'open-profile',
+      phase: 'open-character-profile',
       roomId,
       roomUrl: location.href,
       messages,
@@ -1990,8 +1997,49 @@
       startedAt: Date.now(),
     });
 
-    flash('캐릭터 프로필 자동 수집 중...');
+    closeModal();
+    flash('1/3 캐릭터 프로필 수집 중...');
     profileButton.click();
+  }
+
+  function findUserProfileHubTrigger() {
+    const buttons = qsa('button').filter(btn => {
+      if (!btn.offsetParent) return false;
+      const img = btn.querySelector('img');
+      const src = img?.currentSrc || img?.src || '';
+      return /\/user-plot-chat-profile-image\//.test(src);
+    });
+
+    return buttons[buttons.length - 1] || null;
+  }
+
+  async function openCollectionFallback(error, session = {}) {
+    try {
+      const draft = await buildDraftFromCache({
+        plotId: session.plotId || null,
+        roomId: session.roomId || getRoomId(),
+        messages: Array.isArray(session.messages) ? session.messages : collectRecentMessages(),
+        skipAutoCollect: true,
+      });
+
+      openDraft(draft);
+      if (state.resultBox) {
+        state.resultBox.textContent = [
+          '자동 수집이 중간에 멈췄어.',
+          String(error || '알 수 없는 오류'),
+          '',
+          '위의 ✨ 자동 수집 버튼으로 다시 시도할 수 있어.',
+          '이미 수집된 값은 그대로 남겨둠.'
+        ].join('\n');
+      }
+    } catch (fallbackErr) {
+      console.error('[ZETA Snapshot] fallback popup failed', fallbackErr);
+      ensureModal();
+      openModal();
+      if (state.resultBox) {
+        state.resultBox.textContent = `자동 수집 실패:\n${String(error || fallbackErr?.message || fallbackErr)}`;
+      }
+    }
   }
 
   async function resumeCollectSession() {
@@ -2000,71 +2048,131 @@
     const session = getCollectSession();
     if (!session) return;
 
-    // 오래된 세션은 버린다.
     if (Date.now() - Number(session.startedAt || 0) > 2 * 60 * 1000) {
       setCollectSession(null);
+      if (/\/rooms\/[^/?#]+/.test(location.pathname)) {
+        await openCollectionFallback('자동 수집 시간이 초과됐어. 다시 시도해줘.', session);
+      }
       return;
     }
 
     state.collectResumeBusy = true;
     try {
       if (
-        session.phase === 'open-profile' &&
+        session.phase === 'open-character-profile' &&
         /\/plots\/[^/?#]+\/profile/.test(location.pathname)
       ) {
         const plotId = getPlotIdFromUrl();
-        if (!plotId) throw new Error('프로필 페이지에서 plotId를 찾지 못했어.');
+        if (!plotId) throw new Error('캐릭터 프로필에서 plotId를 찾지 못했어.');
 
-        // 실제 프로필 페이지 DOM에서 캐릭터 정보 수집.
-        collectCharacterProfileFromCurrentPage();
-
-        // plotId를 얻었으니 현재 방의 사용 프로필 편집 페이지도 자동 요청.
-        await collectCurrentUserProfileFromEditPage(plotId, session.roomId);
-
-        const draft = await buildDraftFromCache({
-          plotId,
-          roomId: session.roomId,
-          messages: Array.isArray(session.messages) ? session.messages : [],
-        });
-
-        draft.anchor = session.anchor || buildAnchor(draft.messages || []);
+        const character = collectCharacterProfileFromCurrentPage();
 
         setCollectSession({
           ...session,
-          phase: 'return-room',
+          phase: 'return-room-open-user-profile',
           plotId,
-          draft,
+          character,
         });
 
-        flash('프로필 수집 완료 · 대화방으로 돌아가는 중...');
+        flash('1/3 캐릭터 프로필 완료 · 대화방으로 복귀');
         location.href = session.roomUrl;
         return;
       }
 
       if (
-        session.phase === 'return-room' &&
+        session.phase === 'return-room-open-user-profile' &&
         /\/rooms\/[^/?#]+/.test(location.pathname) &&
         getRoomId() === session.roomId
       ) {
-        const draft = session.draft;
+        const alreadyOpen = qs('section[role="dialog"][aria-label*="대화 프로필"]') ||
+          qs('[role="group"][aria-label="My chat profiles"]')?.closest('section[role="dialog"]');
+
+        setCollectSession({
+          ...session,
+          phase: 'wait-user-profile',
+        });
+
+        if (!alreadyOpen) {
+          const trigger = findUserProfileHubTrigger();
+          if (!trigger) {
+            throw new Error('대화방에서 현재 유저 프로필 버튼을 찾지 못했어.');
+          }
+          flash('2/3 현재 유저 프로필 여는 중...');
+          trigger.click();
+        }
+        return;
+      }
+
+      if (
+        session.phase === 'wait-user-profile' &&
+        /\/rooms\/[^/?#]+/.test(location.pathname) &&
+        getRoomId() === session.roomId
+      ) {
+        const dialog =
+          qs('section[role="dialog"][aria-label*="대화 프로필"]') ||
+          qs('[role="group"][aria-label="My chat profiles"]')?.closest('section[role="dialog"]');
+
+        if (!dialog) return;
+
+        const selected = collectSelectedUserProfileFromDialog();
+        const userProfile = {
+          ...selected,
+          plotId: session.plotId,
+          roomId: session.roomId,
+          source: 'room-selected-profile',
+          updatedAt: Date.now(),
+        };
+
+        save(CONFIG.STORAGE.USER, userProfile);
+        upsertPlotEntry(session.plotId, {
+          userProfile,
+          rooms: {
+            [session.roomId]: {
+              roomId: session.roomId,
+              lastUsedAt: Date.now(),
+            },
+          },
+        });
+
+        const draft = await buildDraftFromCache({
+          plotId: session.plotId,
+          roomId: session.roomId,
+          messages: Array.isArray(session.messages) ? session.messages : [],
+          character: session.character || getPlotEntry(session.plotId)?.character || null,
+          userProfile,
+          skipAutoCollect: true,
+        });
+
+        draft.anchor = session.anchor || buildAnchor(draft.messages || []);
+
         setCollectSession(null);
+        openDraft(draft);
+        flash('3/3 대화 + 캐릭터 + 유저 프로필 수집 완료');
+        return;
+      }
 
-        if (!draft) throw new Error('수집된 Draft가 없어.');
-
-        setTimeout(() => {
-          openDraft(draft);
-          flash('대화 + 캐릭터 프로필 + 사용 프로필 수집 완료');
-        }, 350);
+      if (
+        session.phase === 'failed-return' &&
+        /\/rooms\/[^/?#]+/.test(location.pathname) &&
+        getRoomId() === session.roomId
+      ) {
+        setCollectSession(null);
+        await openCollectionFallback(session.error || '자동 수집 실패', session);
       }
     } catch (err) {
       console.error('[ZETA Snapshot] full collection failed', err);
-      setCollectSession(null);
+      const message = String(err.message || err);
 
-      if (session.roomUrl && location.href !== session.roomUrl) {
-        alert(`자동 수집 실패: ${String(err.message || err)}\n대화방으로 돌아갈게.`);
+      if (session.roomUrl && !/\/rooms\/[^/?#]+/.test(location.pathname)) {
+        setCollectSession({
+          ...session,
+          phase: 'failed-return',
+          error: message,
+        });
         location.href = session.roomUrl;
       } else {
-        alert(`자동 수집 실패: ${String(err.message || err)}`);
+        setCollectSession(null);
+        await openCollectionFallback(message, session);
       }
     } finally {
       state.collectResumeBusy = false;
@@ -2132,24 +2240,110 @@
       <button type="button" data-zs-launch="draft" title="ZETA Snapshot">📷</button>
     `;
 
+    const savedPos = load(CONFIG.STORAGE.LAUNCHER_POS, null);
+    if (savedPos && Number.isFinite(savedPos.left) && Number.isFinite(savedPos.top)) {
+      wrap.style.left = `${savedPos.left}px`;
+      wrap.style.top = `${savedPos.top}px`;
+      wrap.style.right = 'auto';
+      wrap.style.bottom = 'auto';
+    }
+
+    const button = qs('[data-zs-launch="draft"]', wrap);
+    let drag = null;
+    let suppressClick = false;
+
+    const clampPosition = (left, top) => {
+      const rect = wrap.getBoundingClientRect();
+      const pad = 8;
+      return {
+        left: Math.max(pad, Math.min(left, window.innerWidth - rect.width - pad)),
+        top: Math.max(pad, Math.min(top, window.innerHeight - rect.height - pad)),
+      };
+    };
+
+    button.addEventListener('pointerdown', e => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      const rect = wrap.getBoundingClientRect();
+      drag = {
+        pointerId: e.pointerId,
+        offsetX: e.clientX - rect.left,
+        offsetY: e.clientY - rect.top,
+        startX: e.clientX,
+        startY: e.clientY,
+        moved: false,
+      };
+      button.setPointerCapture?.(e.pointerId);
+    });
+
+    button.addEventListener('pointermove', e => {
+      if (!drag || e.pointerId !== drag.pointerId) return;
+
+      const distance = Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY);
+      if (!drag.moved && distance < 6) return;
+      drag.moved = true;
+
+      e.preventDefault();
+      const next = clampPosition(e.clientX - drag.offsetX, e.clientY - drag.offsetY);
+      wrap.style.left = `${next.left}px`;
+      wrap.style.top = `${next.top}px`;
+      wrap.style.right = 'auto';
+      wrap.style.bottom = 'auto';
+    });
+
+    const finishDrag = e => {
+      if (!drag || (e.pointerId != null && e.pointerId !== drag.pointerId)) return;
+      if (drag.moved) {
+        const rect = wrap.getBoundingClientRect();
+        const next = clampPosition(rect.left, rect.top);
+        save(CONFIG.STORAGE.LAUNCHER_POS, next);
+        suppressClick = true;
+        setTimeout(() => { suppressClick = false; }, 0);
+      }
+      try { button.releasePointerCapture?.(drag.pointerId); } catch {}
+      drag = null;
+    };
+
+    button.addEventListener('pointerup', finishDrag);
+    button.addEventListener('pointercancel', finishDrag);
+
     wrap.addEventListener('click', e => {
       const btn = e.target.closest('[data-zs-launch="draft"]');
       if (!btn) return;
+      if (suppressClick) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
 
       (async () => {
         try {
-          if (/\/rooms\/[^/?#]+/.test(location.pathname)) {
-            await startFullCollectionFromRoom();
-            return;
-          }
+          const draft = await buildDraftFromCache({
+            roomId: getRoomId(),
+            messages: collectRecentMessages(),
+            skipAutoCollect: true,
+          });
+          openDraft(draft);
 
-          openDraft(await buildDraftFromCache());
-          flash('수집 완료');
+          if (/\/rooms\/[^/?#]+/.test(location.pathname) && state.resultBox) {
+            state.resultBox.textContent = '✨ 자동 수집을 누르면 캐릭터 프로필 → 대화방 → 현재 유저 프로필까지 이어서 수집해.';
+          }
         } catch (err) {
           console.error(err);
-          alert(String(err.message || err));
+          await openCollectionFallback(String(err.message || err), {
+            roomId: getRoomId(),
+            messages: collectRecentMessages(),
+          });
         }
       })();
+    });
+
+    window.addEventListener('resize', () => {
+      if (!wrap.style.left || !wrap.style.top) return;
+      const rect = wrap.getBoundingClientRect();
+      const next = clampPosition(rect.left, rect.top);
+      wrap.style.left = `${next.left}px`;
+      wrap.style.top = `${next.top}px`;
+      save(CONFIG.STORAGE.LAUNCHER_POS, next);
     });
 
     document.body.appendChild(wrap);
@@ -2168,6 +2362,10 @@
         z-index:999999;
       }
       .zs-launcher button{
+        touch-action:none;
+        user-select:none;
+        -webkit-user-select:none;
+        cursor:grab;
         width:50px;
         height:50px;
         border:1px solid rgba(255,255,255,.12);
@@ -2179,7 +2377,7 @@
         font-size:21px;
         transition:.16s ease;
       }
-      .zs-launcher button:active{ transform:scale(.96); }
+      .zs-launcher button:active{ transform:scale(.96); cursor:grabbing; }
 
       .zs-overlay{
         position:fixed;
@@ -2841,7 +3039,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.3 refreshed UI + cross-page collection + MCP write-back ready');
+    console.log('[ZETA Snapshot] v0.6.4 profile-hub collection + fallback popup + draggable launcher ready');
   }
 
   init();
