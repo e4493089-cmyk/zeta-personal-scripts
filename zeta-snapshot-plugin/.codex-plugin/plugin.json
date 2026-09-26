@@ -14,7 +14,7 @@
     ]
   },
   "name": "zeta-snapshot-generator",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Load ZETA snapshots through MCP, generate scenes, and write generated images back to ZETA automatically.",
   "author": {
     "name": "ZETA Snapshot Generator"
