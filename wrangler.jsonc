@@ -1,0 +1,18 @@
+{
+  "name": "zeta-snapshot",
+  "main": "zeta-snapshot-worker.js",
+  "compatibility_date": "2026-09-27",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zeta-snapshot-db",
+      "database_id": "c23a9df3-4eeb-456c-9420-d67c6ac291a8"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "IMAGES",
+      "bucket_name": "zeta-snapshot-images"
+    }
+  ]
+}
