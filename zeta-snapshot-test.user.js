@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZETA Snapshot
 // @namespace    zeta-snapshot-test
-// @version      0.6.2
+// @version      0.6.3
 // @description  ZETA Snapshot collector with MCP result write-back
 // @match        https://zeta-ai.io/*
 // @match        https://www.zeta-ai.io/*
@@ -1615,20 +1615,23 @@
     overlay.innerHTML = `
       <div class="zs-modal">
         <div class="zs-head">
-          <div class="zs-title">ZETA Snapshot Draft</div>
-          <button class="zs-close" type="button">✕</button>
+          <div class="zs-head-copy">
+            <div class="zs-title">ZETA Snapshot</div>
+            <div class="zs-subtitle">장면과 프로필을 확인한 뒤 바로 생성</div>
+          </div>
+          <button class="zs-close" type="button" aria-label="닫기">✕</button>
         </div>
 
         <div id="zs-plot-tabs" class="zs-plot-tabs"></div>
 
         <div class="zs-tools">
-          <button type="button" data-zs-action="load-real">현재 방 한번에 수집</button>
-          <span class="zs-autosave-badge">자동 저장</span>
+          <button type="button" class="zs-refresh-btn" data-zs-action="load-real">↻ 현재 방 다시 수집</button>
+          <span class="zs-autosave-badge">● 자동 저장</span>
         </div>
 
         <div class="zs-body">
           <div class="zs-grid">
-            <div class="zs-field">
+            <div class="zs-field zs-style-field">
               <label>화풍</label>
               <select id="zs-style">
                 <option value="2d">2D 일러스트</option>
@@ -1637,10 +1640,13 @@
               </select>
             </div>
 
-            <div class="zs-field">
-              <label>Room ID</label>
-              <input id="zs-room" type="text" />
-            </div>
+            <details class="zs-technical">
+              <summary>기술 정보</summary>
+              <div class="zs-field">
+                <label>Room ID</label>
+                <input id="zs-room" type="text" />
+              </div>
+            </details>
 
             <div class="zs-field zs-span2">
               <div class="zs-section-title-row">
@@ -1650,29 +1656,32 @@
               <div id="zs-character-slots" class="zs-character-slots"></div>
             </div>
 
-            <div class="zs-field zs-span2">
-              <label>유저 이름</label>
-              <input id="zs-user-name" type="text" />
-            </div>
+            <div class="zs-section-title zs-span2">유저 프로필</div>
 
-            <div class="zs-field zs-span2">
-              <label>유저 원본 설명</label>
-              <textarea id="zs-user-desc"></textarea>
-            </div>
-
-            <div class="zs-field zs-span2">
-              <label>유저 외형 프롬프트 (원본 설명 복사 · 수정 가능)</label>
-              <textarea id="zs-user-appearance"></textarea>
-            </div>
-
-            <div class="zs-field">
-              <label>유저 이미지 URL</label>
-              <input id="zs-user-image" type="text" />
-            </div>
-
-            <div class="zs-field">
-              <label>유저 프리뷰</label>
-              <div class="zs-preview"><img id="zs-user-preview" /></div>
+            <div class="zs-user-card zs-span2">
+              <div class="zs-user-preview-col">
+                <div class="zs-preview"><img id="zs-user-preview" /></div>
+              </div>
+              <div class="zs-user-fields">
+                <div class="zs-field">
+                  <label>이름</label>
+                  <input id="zs-user-name" type="text" />
+                </div>
+                <div class="zs-field">
+                  <label>원본 설명</label>
+                  <textarea id="zs-user-desc"></textarea>
+                </div>
+                <div class="zs-field">
+                  <label>외형 프롬프트 <span class="zs-help">원본 설명에서 시작 · 수정 가능</span></label>
+                  <textarea id="zs-user-appearance"></textarea>
+                </div>
+                <details class="zs-technical zs-user-url">
+                  <summary>이미지 URL</summary>
+                  <div class="zs-field">
+                    <input id="zs-user-image" type="text" />
+                  </div>
+                </details>
+              </div>
             </div>
 
             <div class="zs-field zs-span2">
@@ -1687,8 +1696,8 @@
           </div>
 
           <div class="zs-actions">
-            <button type="button" class="primary" data-zs-action="send-relay">스냅샷 만들기</button>
             <button type="button" data-zs-action="close">닫기</button>
+            <button type="button" class="primary" data-zs-action="send-relay">스냅샷 만들기</button>
           </div>
 
           <div class="zs-result-wrap">
@@ -2154,174 +2163,280 @@
     style.textContent = `
       .zs-launcher{
         position:fixed;
-        right:18px;
-        bottom:18px;
+        right:16px;
+        bottom:max(18px, env(safe-area-inset-bottom));
         z-index:999999;
-        display:flex;
-        flex-direction:column;
-        gap:8px;
       }
       .zs-launcher button{
-        width:46px;
-        height:46px;
-        border:none;
-        border-radius:14px;
+        width:50px;
+        height:50px;
+        border:1px solid rgba(255,255,255,.12);
+        border-radius:16px;
         cursor:pointer;
-        background:#111827;
+        background:#18181b;
         color:#fff;
-        box-shadow:0 8px 24px rgba(0,0,0,.22);
-        font-size:20px;
+        box-shadow:0 10px 30px rgba(0,0,0,.35);
+        font-size:21px;
+        transition:.16s ease;
       }
-      .zs-launcher button:hover{ transform:translateY(-1px); }
+      .zs-launcher button:active{ transform:scale(.96); }
 
       .zs-overlay{
         position:fixed;
         inset:0;
-        background:rgba(0,0,0,.48);
+        background:rgba(0,0,0,.68);
+        backdrop-filter:blur(6px);
+        -webkit-backdrop-filter:blur(6px);
         z-index:9999999;
         display:none;
         align-items:center;
         justify-content:center;
-        padding:24px;
+        padding:18px;
+        box-sizing:border-box;
       }
       .zs-modal{
-        width:min(980px, 96vw);
-        max-height:92vh;
+        width:min(880px, 96vw);
+        max-height:min(92vh, 920px);
         overflow:hidden;
         display:flex;
         flex-direction:column;
-        background:#fff;
-        color:#111827;
-        border-radius:18px;
-        box-shadow:0 20px 60px rgba(0,0,0,.25);
+        background:#18181b;
+        color:#f4f4f5;
+        border:1px solid rgba(255,255,255,.08);
+        border-radius:22px;
+        box-shadow:0 28px 80px rgba(0,0,0,.5);
       }
       .zs-head{
         display:flex;
         align-items:center;
         justify-content:space-between;
-        padding:16px 18px;
-        border-bottom:1px solid #e5e7eb;
+        gap:12px;
+        padding:16px 18px 14px;
+        border-bottom:1px solid rgba(255,255,255,.07);
+        background:#18181b;
+        position:sticky;
+        top:0;
+        z-index:4;
       }
+      .zs-head-copy{ min-width:0; }
       .zs-title{
         font-size:18px;
-        font-weight:700;
+        line-height:1.25;
+        font-weight:800;
+        letter-spacing:-.02em;
+      }
+      .zs-subtitle{
+        margin-top:3px;
+        color:#a1a1aa;
+        font-size:11px;
+        line-height:1.35;
       }
       .zs-close{
+        width:34px;
+        height:34px;
+        flex:0 0 auto;
         border:none;
-        background:none;
-        color:#111827;
-        font-size:20px;
+        border-radius:10px;
+        background:#27272a;
+        color:#d4d4d8;
+        font-size:16px;
         cursor:pointer;
       }
+
       .zs-plot-tabs{
         display:none;
         gap:8px;
         overflow-x:auto;
-        padding:10px 18px 0;
-        scrollbar-width:thin;
+        padding:12px 16px 4px;
+        scrollbar-width:none;
       }
+      .zs-plot-tabs::-webkit-scrollbar{ display:none; }
       .zs-plot-tab{
         flex:0 0 auto;
-        min-height:34px;
+        min-height:40px;
         display:flex;
         align-items:center;
-        gap:7px;
-        max-width:210px;
-        border:1px solid #dbe1e8;
-        background:#f8fafc;
-        color:#475569;
-        padding:9px 14px;
-        border-radius:999px;
+        gap:8px;
+        max-width:260px;
+        border:1px solid rgba(255,255,255,.09);
+        background:#27272a;
+        color:#d4d4d8;
+        padding:10px 14px;
+        border-radius:12px;
         cursor:pointer;
         font-size:13px;
-        line-height:1;
-      }
-      .zs-plot-tab:hover{
-        background:#f1f5f9;
       }
       .zs-plot-tab.active{
-        background:#111827;
-        border-color:#111827;
-        color:#fff;
+        background:#f4f4f5;
+        border-color:#f4f4f5;
+        color:#18181b;
       }
       .zs-plot-tab-label{
-        max-width:150px;
+        max-width:190px;
         overflow:hidden;
         text-overflow:ellipsis;
         white-space:nowrap;
-        font-weight:700;
+        font-weight:750;
       }
       .zs-plot-tab-meta{
         font-size:10px;
-        opacity:.72;
+        opacity:.68;
       }
+
       .zs-tools{
         display:flex;
-        gap:8px;
-        flex-wrap:wrap;
-        padding:12px 18px 0;
+        align-items:center;
+        gap:9px;
+        padding:10px 16px 4px;
+      }
+      .zs-refresh-btn{
+        border:1px solid rgba(255,255,255,.08)!important;
+        background:#27272a!important;
+        color:#e4e4e7!important;
       }
       .zs-autosave-badge{
+        margin-left:auto;
         display:inline-flex;
         align-items:center;
-        padding:0 4px;
-        font-size:12px;
-        color:#64748b;
+        gap:4px;
+        color:#71717a;
+        font-size:11px;
+        white-space:nowrap;
       }
+      .zs-autosave-badge::first-letter{ color:#22c55e; }
+
       .zs-tools button,
       .zs-actions button{
+        min-height:40px;
         border:none;
-        background:#e5e7eb;
-        color:#111827;
-        padding:10px 12px;
-        border-radius:10px;
-        cursor:pointer;
+        border-radius:12px;
+        padding:9px 13px;
         font-size:13px;
+        font-weight:700;
+        cursor:pointer;
       }
-      .zs-actions button.primary{
-        background:#111827;
-        color:#fff;
-      }
+
       .zs-body{
         overflow:auto;
-        padding:16px 18px 18px;
+        overscroll-behavior:contain;
+        padding:14px 16px 92px;
       }
       .zs-grid{
         display:grid;
-        grid-template-columns:1fr 1fr;
-        gap:14px;
+        grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+        gap:12px;
       }
       .zs-field{
         display:flex;
         flex-direction:column;
         gap:6px;
+        min-width:0;
       }
       .zs-span2{ grid-column:span 2; }
+      .zs-section-title{
+        margin-top:8px;
+        padding-top:4px;
+        color:#f4f4f5;
+        font-size:13px;
+        font-weight:800;
+      }
       .zs-section-title-row{
         display:flex;
         align-items:center;
         justify-content:space-between;
         gap:10px;
+        margin-top:8px;
+      }
+      .zs-section-title-row > label{
+        color:#f4f4f5!important;
+        font-size:13px!important;
+        font-weight:800!important;
       }
       .zs-section-title-row > button{
-        border:1px solid #d1d5db;
-        background:#f8fafc;
-        color:#334155;
+        border:1px solid rgba(255,255,255,.08);
+        background:#27272a;
+        color:#d4d4d8;
         padding:7px 10px;
-        border-radius:9px;
+        border-radius:10px;
         cursor:pointer;
-        font-size:12px;
+        font-size:11px;
       }
+
+      .zs-field label,
+      .zs-char-field > span{
+        color:#a1a1aa;
+        font-size:11px;
+        font-weight:700;
+      }
+      .zs-help{
+        color:#71717a;
+        font-size:10px;
+        font-weight:500;
+      }
+      .zs-field input,
+      .zs-field select,
+      .zs-field textarea,
+      .zs-char-field input,
+      .zs-char-field textarea{
+        width:100%;
+        box-sizing:border-box;
+        border:1px solid rgba(255,255,255,.09);
+        border-radius:12px;
+        padding:10px 11px;
+        background:#27272a;
+        color:#f4f4f5;
+        outline:none;
+        font-size:13px;
+        line-height:1.45;
+        transition:border-color .15s ease, background .15s ease;
+      }
+      .zs-field input:focus,
+      .zs-field select:focus,
+      .zs-field textarea:focus,
+      .zs-char-field input:focus,
+      .zs-char-field textarea:focus{
+        border-color:#71717a;
+        background:#2f2f33;
+      }
+      .zs-field textarea{ min-height:88px; resize:vertical; }
+      .zs-char-field textarea{ min-height:74px; resize:vertical; }
+      #zs-messages{
+        min-height:150px;
+        color:#d4d4d8;
+        background:#202024;
+      }
+
+      .zs-technical{
+        align-self:end;
+        border:1px solid rgba(255,255,255,.07);
+        border-radius:12px;
+        background:#202024;
+        overflow:hidden;
+      }
+      .zs-technical > summary{
+        list-style:none;
+        cursor:pointer;
+        color:#71717a;
+        font-size:11px;
+        font-weight:700;
+        padding:11px 12px;
+      }
+      .zs-technical > summary::-webkit-details-marker{ display:none; }
+      .zs-technical[open] > summary{
+        border-bottom:1px solid rgba(255,255,255,.06);
+      }
+      .zs-technical > .zs-field{ padding:10px; }
+
       .zs-character-slots{
         display:flex;
         flex-direction:column;
-        gap:12px;
+        gap:10px;
       }
       .zs-char-card{
-        border:1px solid #dbe1e8;
-        border-radius:14px;
+        border:1px solid rgba(255,255,255,.08);
+        border-radius:16px;
         padding:12px;
-        background:#f8fafc;
+        background:#202024;
       }
       .zs-char-card-head{
         display:flex;
@@ -2335,12 +2450,13 @@
         overflow:hidden;
         text-overflow:ellipsis;
         white-space:nowrap;
+        color:#f4f4f5;
         font-size:14px;
       }
       .zs-char-card-controls{
         display:flex;
         align-items:center;
-        gap:8px;
+        gap:7px;
         flex-wrap:wrap;
         justify-content:flex-end;
       }
@@ -2348,44 +2464,45 @@
         display:flex!important;
         flex-direction:row!important;
         align-items:center;
-        gap:4px!important;
-        font-size:12px!important;
-        font-weight:500!important;
+        gap:5px!important;
+        color:#a1a1aa!important;
+        font-size:11px!important;
+        font-weight:600!important;
         white-space:nowrap;
       }
       .zs-inline-check input{
         width:auto!important;
         margin:0;
+        accent-color:#f4f4f5;
       }
       .zs-char-remove{
         border:none;
-        background:#e5e7eb;
-        color:#475569;
-        border-radius:8px;
+        background:#3f2025;
+        color:#fda4af;
+        border-radius:9px;
         padding:6px 8px;
-        font-size:11px;
+        font-size:10px;
         cursor:pointer;
       }
       .zs-char-grid{
         display:grid;
-        grid-template-columns:132px minmax(0,1fr);
+        grid-template-columns:110px minmax(0,1fr);
         gap:12px;
         align-items:start;
       }
       .zs-char-preview-wrap{
-        width:120px;
-        height:120px;
-        border:1px dashed #cbd5e1;
-        border-radius:12px;
+        width:110px;
+        height:110px;
+        border-radius:14px;
         display:flex;
         align-items:center;
         justify-content:center;
-        background:#fff;
+        background:#27272a;
         overflow:hidden;
       }
       .zs-char-slot-preview{
-        width:120px;
-        height:120px;
+        width:100%;
+        height:100%;
         object-fit:cover;
         display:block;
       }
@@ -2400,106 +2517,103 @@
         flex-direction:column;
         gap:5px;
       }
-      .zs-char-field > span{
-        font-size:12px;
-        font-weight:700;
-        color:#475569;
+
+      .zs-user-card{
+        display:grid;
+        grid-template-columns:120px minmax(0,1fr);
+        gap:12px;
+        padding:12px;
+        border:1px solid rgba(255,255,255,.08);
+        border-radius:16px;
+        background:#202024;
       }
-      .zs-char-field input,
-      .zs-char-field textarea{
-        width:100%;
-        border:1px solid #d1d5db;
-        border-radius:9px;
-        padding:9px 10px;
-        background:#fff;
-        color:#111827;
-        box-sizing:border-box;
-        font-size:12px;
-        line-height:1.45;
-      }
-      .zs-char-field textarea{
-        min-height:78px;
-        resize:vertical;
-      }
-      .zs-field label{
-        font-size:13px;
-        font-weight:700;
-        color:#374151;
-      }
-      .zs-field input,
-      .zs-field select,
-      .zs-field textarea{
-        width:100%;
-        border:1px solid #d1d5db;
-        border-radius:10px;
-        padding:10px 12px;
-        background:#fff;
-        color:#111827;
-        font-size:13px;
-        line-height:1.45;
-        box-sizing:border-box;
-      }
-      .zs-field textarea{
-        min-height:94px;
-        resize:vertical;
+      .zs-user-preview-col{ min-width:0; }
+      .zs-user-fields{
+        display:flex;
+        flex-direction:column;
+        gap:9px;
+        min-width:0;
       }
       .zs-preview{
-        width:100%;
-        min-height:110px;
-        border:1px dashed #cbd5e1;
-        border-radius:12px;
+        width:120px;
+        height:120px;
+        border-radius:14px;
         display:flex;
         align-items:center;
         justify-content:center;
-        background:#f8fafc;
+        background:#27272a;
         overflow:hidden;
       }
       .zs-preview img{
-        width:120px;
-        height:120px;
+        width:100%;
+        height:100%;
         object-fit:cover;
-        border-radius:12px;
         display:block;
       }
+      .zs-user-url{ margin-top:1px; }
+
       .zs-actions{
-        display:flex;
+        position:sticky;
+        bottom:-92px;
+        z-index:5;
+        display:grid;
+        grid-template-columns:110px minmax(0,1fr);
         gap:8px;
-        flex-wrap:wrap;
-        margin-top:18px;
+        margin:18px -16px -92px;
+        padding:12px 16px calc(12px + env(safe-area-inset-bottom));
+        border-top:1px solid rgba(255,255,255,.08);
+        background:rgba(24,24,27,.96);
+        backdrop-filter:blur(14px);
+        -webkit-backdrop-filter:blur(14px);
       }
+      .zs-actions button{
+        background:#27272a;
+        color:#d4d4d8;
+      }
+      .zs-actions button.primary{
+        background:#f4f4f5;
+        color:#18181b;
+        font-weight:800;
+      }
+
       .zs-result-wrap{
         margin-top:16px;
       }
       .zs-result-wrap label{
         display:block;
-        font-size:13px;
+        color:#a1a1aa;
+        font-size:11px;
         font-weight:700;
-        color:#374151;
         margin-bottom:6px;
       }
       #zs-result{
         margin:0;
-        min-height:120px;
-        max-height:280px;
+        min-height:0;
+        max-height:230px;
         overflow:auto;
-        background:#0f172a;
-        color:#e2e8f0;
+        background:#0f0f11;
+        color:#d4d4d8;
+        border:1px solid rgba(255,255,255,.06);
         border-radius:12px;
-        padding:12px;
-        font-size:12px;
+        padding:11px;
+        font-size:11px;
         line-height:1.5;
+        white-space:pre-wrap;
+        word-break:break-all;
       }
+      #zs-result:empty{ display:none; }
+      .zs-result-wrap:has(#zs-result:empty){ display:none; }
 
       .zs-inline-card{
         box-sizing:border-box;
-        width:min(640px, calc(100% - 32px));
-        margin:14px auto;
+        width:min(640px, calc(100% - 24px));
+        margin:12px auto;
         padding:12px;
-        border:1px solid rgba(148,163,184,.28);
+        border:1px solid rgba(255,255,255,.08);
         border-radius:16px;
-        background:rgba(255,255,255,.96);
-        color:#111827;
-        box-shadow:0 6px 22px rgba(15,23,42,.08);
+        background:#18181b;
+        color:#f4f4f5;
+        box-shadow:0 8px 26px rgba(0,0,0,.18);
         position:relative;
         z-index:2;
       }
@@ -2518,33 +2632,31 @@
       }
       .zs-inline-card-head strong{ font-size:13px; }
       .zs-inline-status{
-        font-size:11px;
-        color:#64748b;
-        background:#f1f5f9;
+        font-size:10px;
+        color:#a1a1aa;
+        background:#27272a;
         border-radius:999px;
         padding:4px 7px;
       }
       .zs-inline-status[data-status="completed"]{
-        background:#dcfce7;
-        color:#166534;
+        background:#16351f;
+        color:#86efac;
       }
       .zs-inline-status[data-status="failed"]{
-        background:#fee2e2;
-        color:#991b1b;
+        background:#3f2025;
+        color:#fda4af;
       }
       .zs-inline-card-actions{
         display:flex;
         gap:6px;
-        flex-wrap:wrap;
-        justify-content:flex-end;
       }
       .zs-inline-card-actions button{
         border:none;
-        border-radius:8px;
+        border-radius:9px;
         padding:7px 9px;
-        background:#e5e7eb;
-        color:#111827;
-        font-size:11px;
+        background:#27272a;
+        color:#d4d4d8;
+        font-size:10px;
         cursor:pointer;
       }
       .zs-inline-result-image{
@@ -2553,51 +2665,161 @@
         max-height:720px;
         object-fit:contain;
         border-radius:12px;
-        background:#f8fafc;
+        background:#09090b;
       }
       .zs-inline-waiting{
         padding:16px 10px;
         border-radius:12px;
-        background:#f8fafc;
-        color:#64748b;
-        font-size:12px;
+        background:#202024;
+        color:#71717a;
+        font-size:11px;
         text-align:center;
       }
       .zs-inline-error{
         margin-top:8px;
-        color:#b91c1c;
+        color:#fda4af;
         font-size:11px;
         line-height:1.45;
       }
+
       .zs-toast{
         position:fixed;
         left:50%;
-        bottom:26px;
+        bottom:max(24px, env(safe-area-inset-bottom));
         transform:translateX(-50%) translateY(10px);
-        background:#111827;
-        color:#fff;
+        max-width:calc(100vw - 32px);
+        background:#f4f4f5;
+        color:#18181b;
         padding:10px 14px;
         border-radius:999px;
-        font-size:13px;
+        font-size:12px;
+        font-weight:700;
         z-index:10000000;
         opacity:0;
         transition:.2s ease;
         pointer-events:none;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+        box-shadow:0 10px 30px rgba(0,0,0,.25);
       }
       .zs-toast.show{
         opacity:1;
         transform:translateX(-50%) translateY(0);
       }
+
       @media (max-width:760px){
-        .zs-grid{ grid-template-columns:1fr; }
+        .zs-overlay{
+          align-items:flex-end;
+          padding:0;
+        }
+        .zs-modal{
+          width:100%;
+          max-height:94dvh;
+          border-radius:22px 22px 0 0;
+          border-left:none;
+          border-right:none;
+          border-bottom:none;
+        }
+        .zs-head{
+          padding:14px 16px 12px;
+        }
+        .zs-subtitle{ display:none; }
+        .zs-title{ font-size:17px; }
+        .zs-plot-tabs{
+          padding:10px 12px 2px;
+          gap:7px;
+        }
+        .zs-plot-tab{
+          min-height:38px;
+          max-width:230px;
+          padding:9px 12px;
+        }
+        .zs-tools{
+          padding:9px 12px 2px;
+        }
+        .zs-autosave-badge{
+          font-size:10px;
+        }
+        .zs-body{
+          padding:12px 12px 88px;
+        }
+        .zs-grid{
+          grid-template-columns:1fr;
+          gap:10px;
+        }
         .zs-span2{ grid-column:span 1; }
-        .zs-overlay{ padding:8px; }
-        .zs-modal{ width:100%; max-height:96vh; border-radius:14px; }
-        .zs-char-grid{ grid-template-columns:1fr; }
-        .zs-char-preview-wrap{ width:100%; height:150px; }
-        .zs-char-slot-preview{ width:150px; height:150px; }
-        .zs-char-card-head{ align-items:flex-start; flex-direction:column; }
-        .zs-char-card-controls{ justify-content:flex-start; }
+        .zs-technical{ align-self:stretch; }
+
+        .zs-char-card{
+          padding:10px;
+          border-radius:14px;
+        }
+        .zs-char-card-head{
+          align-items:flex-start;
+          margin-bottom:9px;
+        }
+        .zs-char-card-controls{
+          gap:6px;
+          justify-content:flex-end;
+        }
+        .zs-char-grid{
+          grid-template-columns:88px minmax(0,1fr);
+          gap:10px;
+        }
+        .zs-char-preview-wrap{
+          width:88px;
+          height:88px;
+          border-radius:12px;
+        }
+        .zs-char-field textarea{ min-height:68px; }
+
+        .zs-user-card{
+          grid-template-columns:88px minmax(0,1fr);
+          gap:10px;
+          padding:10px;
+        }
+        .zs-preview{
+          width:88px;
+          height:88px;
+          border-radius:12px;
+        }
+
+        .zs-actions{
+          grid-template-columns:84px minmax(0,1fr);
+          margin-left:-12px;
+          margin-right:-12px;
+          padding-left:12px;
+          padding-right:12px;
+        }
+      }
+
+      @media (max-width:420px){
+        .zs-char-card-head{
+          flex-direction:column;
+          gap:7px;
+        }
+        .zs-char-card-controls{
+          width:100%;
+          justify-content:flex-start;
+        }
+        .zs-char-grid,
+        .zs-user-card{
+          grid-template-columns:72px minmax(0,1fr);
+        }
+        .zs-char-preview-wrap,
+        .zs-preview{
+          width:72px;
+          height:72px;
+        }
+        .zs-field input,
+        .zs-field select,
+        .zs-field textarea,
+        .zs-char-field input,
+        .zs-char-field textarea{
+          font-size:12px;
+          padding:9px 10px;
+        }
       }
     `;
 
@@ -2619,7 +2841,7 @@
       restoreSnapshotForCurrentRoom();
     }, 700);
 
-    console.log('[ZETA Snapshot] v0.6.2 cross-page one-click collection + MCP write-back ready');
+    console.log('[ZETA Snapshot] v0.6.3 refreshed UI + cross-page collection + MCP write-back ready');
   }
 
   init();
